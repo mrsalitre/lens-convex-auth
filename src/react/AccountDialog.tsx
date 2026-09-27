@@ -192,6 +192,16 @@ function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign
       .catch(() => {})
   }, [auth, ownerAddress])
 
+  // Accounts can share a username across namespaces: those get their shortened address too
+  const sharedUsernames = React.useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const { acc } of selectable) {
+      const username = usernameOf(acc)
+      if (username) counts.set(username, (counts.get(username) ?? 0) + 1)
+    }
+    return new Set([...counts].filter(([, count]) => count > 1).map(([username]) => username))
+  }, [selectable, usernameOf])
+
   // Fetch each account's challenge ahead of time, so a tap can ask the wallet to sign right away:
   // on mobile that tap is what lets the wallet app open (see opensWalletWithDeepLink).
   React.useEffect(() => {
@@ -268,7 +278,12 @@ function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign
                 onClick={() => handleClick(acc, id)}
                 disabled={step?.status === "loading"}
               >
-                <span className="truncate">{username}</span>
+                <span className="truncate">
+                  {username}
+                  {sharedUsernames.has(username) && (
+                    <span className="text-muted-foreground"> · {acc.address.slice(0, 6)}…{acc.address.slice(-4)}</span>
+                  )}
+                </span>
                 {isLoading && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
                 {awaitingSignature && <span className="text-sm font-medium text-primary">Sign in</span>}
               </button>

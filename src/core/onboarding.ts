@@ -1,4 +1,4 @@
-import { PublicClient, evmAddress, signatureFrom, uri, type Account, type SessionClient } from "@lens-protocol/client"
+import { PageSize, PublicClient, evmAddress, signatureFrom, uri, type Account, type Cursor, type SessionClient } from "@lens-protocol/client"
 import { canCreateUsername, createAccountWithUsername, fetchAccount, fetchUsername, fetchUsernames } from "@lens-protocol/client/actions"
 import { handleOperationWith } from "@lens-protocol/client/viem"
 import { account as accountMetadata } from "@lens-protocol/metadata"
@@ -157,12 +157,22 @@ export async function createLensAccount(
 // An account's username in the namespace it prefers: the app's namespace, then the global Lens one, then
 // any other. So accounts from apps with their own namespace can sign in too. Null if it has none.
 export async function fetchAccountUsername(auth: LensAuth, accountAddress: string): Promise<string | null> {
-  const result = await fetchUsernames(auth.lensClient, { filter: { linkedTo: evmAddress(accountAddress) } })
-  if (result.isErr()) throw result.error
+  const usernames: { localName: string; namespace: string; value: string }[] = []
+  let cursor: Cursor | null = null
+  do {
+    const result = await fetchUsernames(auth.lensClient, {
+      filter: { linkedTo: evmAddress(accountAddress) },
+      pageSize: PageSize.Fifty,
+      cursor,
+    })
+    if (result.isErr()) throw result.error
+    usernames.push(...result.value.items)
+    cursor = (result.value.pageInfo.next as Cursor | null) ?? null
+  } while (cursor)
   const preferred = auth.usernameNamespace?.toLowerCase()
   const rank = (username: { namespace: string; value: string }) =>
     username.namespace.toLowerCase() === preferred ? 0 : username.value.startsWith("lens/") ? 1 : 2
-  const [best] = [...result.value.items].sort((a, b) => rank(a) - rank(b))
+  const [best] = usernames.sort((a, b) => rank(a) - rank(b))
   return best?.localName ?? null
 }
 
