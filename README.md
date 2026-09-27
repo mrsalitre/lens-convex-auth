@@ -294,6 +294,7 @@ Returns `auth` with `thirdwebClient`, `chain`, `lensClient`, `tokens`, `getSessi
 | `convex` | Your `ConvexReactClient` (optional) |
 | `onSignIn(account)` | Called after a sign-in from the dialog, once Convex accepts it |
 | `accountDialog` | Render the account dialog (default `true`) |
+| `wallets` | Wallets to reconnect after a reload while a Lens session is stored (default: thirdweb's). Pass the same list as `SignInButton`'s `connectButtonProps.wallets` if you customize it |
 
 ### `useLensAuth()`
 

@@ -1,7 +1,7 @@
 import * as React from "react"
 import { LensProvider } from "@lens-protocol/react"
 import { ThirdwebProvider, useActiveAccount, useActiveWallet, useDisconnect } from "thirdweb/react"
-import type { Account as ThirdwebAccount } from "thirdweb/wallets"
+import type { Account as ThirdwebAccount, Wallet } from "thirdweb/wallets"
 import { ConvexProviderWithAuth, useConvexAuth, type ConvexReactClient } from "convex/react"
 import type { LensAuth } from "../core/auth"
 import { TOKENS_CHANGED_EVENT } from "../core/tokens"
@@ -111,14 +111,22 @@ export type LensAuthProviderProps = {
   onSignIn?: (account: SignedInAccount) => void | Promise<void>
   /** Render the account dialog. Set to false to render <AccountDialog /> yourself. Defaults to true. */
   accountDialog?: boolean
+  /**
+   * Wallets to reconnect after a reload while a Lens session is stored. Pass the same list as
+   * SignInButton's `connectButtonProps.wallets`, if you customize it. Defaults to thirdweb's wallets.
+   */
+  wallets?: Wallet[]
   children: React.ReactNode
 }
 
+// thirdweb's AutoConnect (loaded on demand, like the ConnectButton) reconnects the last wallet
+const AutoConnect = React.lazy(() => import("thirdweb/react").then((m) => ({ default: m.AutoConnect })))
+
 // Wraps the app in thirdweb, Lens and (optionally) Convex providers wired to one session.
-export function LensAuthProvider({ auth, convex, onSignIn, accountDialog = true, children }: LensAuthProviderProps) {
+export function LensAuthProvider({ auth, convex, onSignIn, accountDialog = true, wallets, children }: LensAuthProviderProps) {
   const [useConvexAuthHook] = React.useState(() => createUseConvexAuth(auth))
   const content = (
-    <LensAuthState auth={auth} onSignIn={onSignIn} withConvex={!!convex}>
+    <LensAuthState auth={auth} onSignIn={onSignIn} withConvex={!!convex} wallets={wallets}>
       {children}
       {accountDialog && <AccountDialog />}
     </LensAuthState>
@@ -153,10 +161,11 @@ function writeSelectedAccount(auth: LensAuth, account: SignedInAccount | null) {
   } catch {}
 }
 
-function LensAuthState({ auth, onSignIn, withConvex, children }: {
+function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
   auth: LensAuth
   onSignIn?: LensAuthProviderProps["onSignIn"]
   withConvex: boolean
+  wallets?: Wallet[]
   children: React.ReactNode
 }) {
   const wallet = useActiveAccount()
@@ -225,6 +234,14 @@ function LensAuthState({ auth, onSignIn, withConvex, children }: {
     <LensAuthContext.Provider value={value}>
       <AccountDialogContext.Provider value={dialog}>
         {children}
+        {/* After a reload the Lens session is restored from storage, but the wallet only comes back if
+            something reconnects it: SignInButton's ConnectButton does, but it's only shown while no
+            wallet is connected and apps often hide it once signed in. */}
+        {sessionKey && !wallet && (
+          <React.Suspense fallback={null}>
+            <AutoConnect client={auth.thirdwebClient} chain={auth.chain} wallets={wallets} />
+          </React.Suspense>
+        )}
         {pendingSignIn && onSignIn && (
           withConvex
             ? <ConvexSignInCallback account={pendingSignIn} onSignIn={onSignIn} done={() => setPendingSignIn(null)} />
