@@ -1,5 +1,5 @@
-import { PublicClient, evmAddress, signatureFrom, uri, type Account, type SessionClient } from "@lens-protocol/client"
-import { canCreateUsername, createAccountWithUsername, fetchAccount, fetchUsername } from "@lens-protocol/client/actions"
+import { PageSize, PublicClient, evmAddress, signatureFrom, uri, type Account, type Cursor, type SessionClient } from "@lens-protocol/client"
+import { canCreateUsername, createAccountWithUsername, fetchAccount, fetchUsername, fetchUsernames } from "@lens-protocol/client/actions"
 import { handleOperationWith } from "@lens-protocol/client/viem"
 import { account as accountMetadata } from "@lens-protocol/metadata"
 import { StorageClient, immutable } from "@lens-chain/storage-client"
@@ -47,9 +47,14 @@ export function usernameFormatError(localName: string): string | null {
   return null
 }
 
+// The username to create, in the app's namespace when it has one (else the global Lens namespace)
+function usernameInput(auth: LensAuth, localName: string) {
+  return auth.usernameNamespace ? { localName, namespace: evmAddress(auth.usernameNamespace) } : { localName }
+}
+
 // Needs no session, so it can run while the user types.
 export async function isUsernameTaken(auth: LensAuth, localName: string): Promise<boolean> {
-  const result = await fetchUsername(auth.lensClient, { username: { localName } })
+  const result = await fetchUsername(auth.lensClient, { username: usernameInput(auth, localName) })
   if (result.isErr()) throw result.error
   return result.value !== null
 }
@@ -64,8 +69,8 @@ function validationFailedMessage(failed: NamespaceValidationFailed) {
 }
 
 // Returns why the username can't be created, or null if it can.
-export async function checkUsername(session: SessionClient, localName: string): Promise<string | null> {
-  const result = await canCreateUsername(session, { localName })
+export async function checkUsername(auth: LensAuth, session: SessionClient, localName: string): Promise<string | null> {
+  const result = await canCreateUsername(session, usernameInput(auth, localName))
   if (result.isErr()) throw result.error
   switch (result.value.__typename) {
     case "NamespaceOperationValidationPassed":
@@ -114,7 +119,7 @@ export async function createLensAccount(
   request: { localName: string; metadataUri: string },
 ): Promise<Account> {
   const created = await createAccountWithUsername(session, {
-    username: { localName: request.localName },
+    username: usernameInput(auth, request.localName),
     metadataUri: uri(request.metadataUri),
   })
   if (created.isErr()) throw created.error
@@ -147,6 +152,28 @@ export async function createLensAccount(
     await new Promise((resolve) => setTimeout(resolve, ACCOUNT_POLL_INTERVAL_MS))
   }
   throw new OnboardingError("Your account was created but isn’t ready yet. Sign in to it again in a minute.")
+}
+
+// An account's username in the namespace it prefers: the app's namespace, then the global Lens one, then
+// any other. So accounts from apps with their own namespace can sign in too. Null if it has none.
+export async function fetchAccountUsername(auth: LensAuth, accountAddress: string): Promise<string | null> {
+  const usernames: { localName: string; namespace: string; value: string }[] = []
+  let cursor: Cursor | null = null
+  do {
+    const result = await fetchUsernames(auth.lensClient, {
+      filter: { linkedTo: evmAddress(accountAddress) },
+      pageSize: PageSize.Fifty,
+      cursor,
+    })
+    if (result.isErr()) throw result.error
+    usernames.push(...result.value.items)
+    cursor = (result.value.pageInfo.next as Cursor | null) ?? null
+  } while (cursor)
+  const preferred = auth.usernameNamespace?.toLowerCase()
+  const rank = (username: { namespace: string; value: string }) =>
+    username.namespace.toLowerCase() === preferred ? 0 : username.value.startsWith("lens/") ? 1 : 2
+  const [best] = usernames.sort((a, b) => rank(a) - rank(b))
+  return best?.localName ?? null
 }
 
 // Signs the app in to the new account without another signature: the onboarding session switches to it,

@@ -21,6 +21,11 @@ export type LensAuthOptions = {
   storagePrefix?: string
   /** Route that exchanges a Lens ID token for a Convex token. Defaults to "/api/convex-token". */
   convexTokenEndpoint?: string
+  /**
+   * Username namespace (0x…) new accounts get their username in, and whose usernames are shown first.
+   * Defaults to the global Lens namespace.
+   */
+  usernameNamespace?: string
 }
 
 export type LensLoginRole = "ACCOUNT_OWNER" | "ACCOUNT_MANAGER"
@@ -68,11 +73,15 @@ export function createLensAuth(options: LensAuthOptions) {
   if (!ADDRESS_RE.test(options.lensAppAddress ?? "")) {
     throw new Error("lens-convex-auth: lensAppAddress must be your Lens app address (0x…)")
   }
+  if (options.usernameNamespace !== undefined && !ADDRESS_RE.test(options.usernameNamespace)) {
+    throw new Error("lens-convex-auth: usernameNamespace must be a Lens namespace address (0x…)")
+  }
 
   const environment: LensEnvironmentName = options.environment ?? "mainnet"
   const storagePrefix = options.storagePrefix ?? "lens_"
   const appAddress = options.lensAppAddress
   const convexTokenEndpoint = options.convexTokenEndpoint ?? DEFAULT_CONVEX_TOKEN_ENDPOINT
+  const usernameNamespace = options.usernameNamespace
 
   const tokens = new TokenService({ storagePrefix, graphqlUrl: `${lensApiOrigin(environment)}/graphql` })
   const thirdwebClient: ThirdwebClient = createThirdwebClient({ clientId: options.thirdwebClientId })
@@ -161,6 +170,7 @@ export function createLensAuth(options: LensAuthOptions) {
   return {
     environment,
     appAddress,
+    usernameNamespace,
     storagePrefix,
     thirdwebClient,
     chain,
