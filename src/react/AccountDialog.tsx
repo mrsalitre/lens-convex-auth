@@ -4,6 +4,7 @@ import { evmAddress, type Account, type AccountAvailable } from "@lens-protocol/
 import type { Account as ThirdwebAccount } from "thirdweb/wallets"
 import { Loader2 } from "lucide-react"
 import { CHALLENGE_MAX_AGE_MS, CHALLENGE_REFRESH_MS, opensWalletWithDeepLink, type LensAuth, type LensChallenge } from "../core/auth"
+import { fetchAccountUsername } from "../core/onboarding"
 import { useAccountDialogState, useLensAuth } from "./provider"
 import { CreateAccountForm, type CreatedAccount } from "./CreateAccountForm"
 import { useMediaQuery } from "./dom"
@@ -73,10 +74,16 @@ function AccountDialogBody({ wallet, creating, setCreating }: {
   const { auth } = useLensAuth()
   const { completeSignIn } = useAccountDialogState()
   const isDesktop = useMediaQuery("(min-width: 768px)")
-  const { data, loading } = useAccountsAvailable({ managedBy: evmAddress(wallet.address), includeOwned: true })
+  const { data, loading: loadingAccounts } = useAccountsAvailable({ managedBy: evmAddress(wallet.address), includeOwned: true })
   const accounts = data?.items
+  const usernames = useAccountUsernames(auth, accounts)
+  const loading = loadingAccounts || (!!accounts && !usernames)
+  const usernameOf = React.useCallback((acc: Account) => {
+    const resolved = usernames?.[acc.address.toLowerCase()]
+    return resolved === undefined ? acc.username?.localName ?? null : resolved
+  }, [usernames])
   // Accounts without a username aren't listed, so they don't count
-  const hasAccounts = !!accounts?.some((item) => item.account.username?.localName)
+  const hasAccounts = !loading && !!accounts?.some((item) => usernameOf(item.account))
   // Wallets without an account go straight to creating one
   const showCreate = creating || (!loading && !hasAccounts)
 
@@ -85,7 +92,7 @@ function AccountDialogBody({ wallet, creating, setCreating }: {
     // user gesture, which mobile wallets need to open (see signLensChallenge).
     const signature = await auth.signChallenge(challenge, wallet)
     await auth.authenticate(challenge, signature)
-    completeSignIn({ address: account.address.toLowerCase(), username: account.username?.localName ?? null })
+    completeSignIn({ address: account.address.toLowerCase(), username: usernameOf(account) })
   }
 
   const handleCreated = async (created: CreatedAccount) => {
@@ -115,11 +122,34 @@ function AccountDialogBody({ wallet, creating, setCreating }: {
             onBack={hasAccounts ? () => setCreating(false) : undefined}
           />
         ) : (
-          <AccountList auth={auth} accounts={accounts} loading={loading} ownerAddress={wallet.address} onSign={signIn} onCreate={() => setCreating(true)} />
+          <AccountList auth={auth} accounts={accounts} usernameOf={usernameOf} loading={loading} ownerAddress={wallet.address} onSign={signIn} onCreate={() => setCreating(true)} />
         )}
       </div>
     </>
   )
+}
+
+// Each account's username by lowercased address (see fetchAccountUsername), or undefined while they load.
+// An account whose lookup failed is left out, so it falls back to its global Lens username.
+function useAccountUsernames(auth: LensAuth, accounts?: readonly AccountAvailable[]) {
+  const key = accounts?.map((item) => item.account.address.toLowerCase()).join(",")
+  const [usernames, setUsernames] = React.useState<{ key: string; byAddress: Record<string, string | null> } | null>(null)
+
+  React.useEffect(() => {
+    if (key === undefined) return
+    let cancelled = false
+    const addresses = key ? key.split(",") : []
+    Promise.all(addresses.map((address) =>
+      fetchAccountUsername(auth, address).then((username) => [[address, username] as const], () => []),
+    )).then((entries) => {
+      if (!cancelled) setUsernames({ key, byAddress: Object.fromEntries(entries.flat()) })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [auth, key])
+
+  return usernames && usernames.key === key ? usernames.byAddress : undefined
 }
 
 type SelectableAccount = Account & { isOwner: boolean }
@@ -138,9 +168,10 @@ function fetchChallenge(auth: LensAuth, acc: SelectableAccount, ownerAddress: st
   })
 }
 
-function AccountList({ auth, accounts, loading, ownerAddress, onSign, onCreate }: {
+function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign, onCreate }: {
   auth: LensAuth
   accounts?: readonly AccountAvailable[]
+  usernameOf: (account: Account) => string | null
   loading: boolean
   ownerAddress: string
   onSign: (account: SelectableAccount, challenge: LensChallenge) => Promise<void>
@@ -167,7 +198,7 @@ function AccountList({ auth, accounts, loading, ownerAddress, onSign, onCreate }
     const refresh = () => {
       if (document.visibilityState !== "visible") return
       for (const { acc, id } of selectable) {
-        if (acc.username?.localName) prefetch(acc, id)
+        if (usernameOf(acc)) prefetch(acc, id)
       }
     }
     refresh()
@@ -177,7 +208,7 @@ function AccountList({ auth, accounts, loading, ownerAddress, onSign, onCreate }
       clearInterval(interval)
       document.removeEventListener("visibilitychange", refresh)
     }
-  }, [selectable, prefetch])
+  }, [selectable, usernameOf, prefetch])
 
   const readyChallenge = (id: string) => {
     if (step?.id === id && step.status === "sign") return step.challenge
@@ -225,7 +256,7 @@ function AccountList({ auth, accounts, loading, ownerAddress, onSign, onCreate }
     <div className="py-4 space-y-3">
       <ul className="space-y-2 max-h-80 overflow-y-auto">
         {selectable.map(({ acc, id }) => {
-          const username = acc.username?.localName
+          const username = usernameOf(acc)
           if (!username) return null
           const isLoading = step?.id === id && step.status === "loading"
           const awaitingSignature = step?.id === id && step.status === "sign"

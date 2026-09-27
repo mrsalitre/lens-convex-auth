@@ -17,6 +17,7 @@ export {
   checkUsername,
   createLensAccount,
   createOnboardingClient,
+  fetchAccountUsername,
   isUsernameTaken,
   requestOnboardingChallenge,
   signInToCreatedAccount,

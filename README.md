@@ -281,6 +281,7 @@ Omit the `convex` prop. Everything else works the same.
 | `lensChainRpcUrl` | thirdweb's RPC | Lens Chain RPC URL for thirdweb |
 | `storagePrefix` | `"lens_"` | Prefix of the localStorage keys the session is stored under |
 | `convexTokenEndpoint` | `"/api/convex-token"` | Where the token route lives |
+| `usernameNamespace` | global Lens namespace | Namespace (0x…) new accounts get their username in. The account list shows usernames from it first, then the global one, then any other |
 
 Returns `auth` with `thirdwebClient`, `chain`, `lensClient`, `tokens`, `getSession()`,
 `resumeSession()`, `requestChallenge()`, `authenticate()`, `logout()`, `fetch()` and `fetchConvexToken()`.

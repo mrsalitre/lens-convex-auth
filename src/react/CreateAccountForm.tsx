@@ -137,7 +137,7 @@ export function CreateAccountForm({ ownerAddress, onCreated, onBack }: {
         const localName = username
         if (!created.current) {
             setStep({ status: "checking" })
-            const reason = await checkUsername(onboarding, localName)
+            const reason = await checkUsername(auth, onboarding, localName)
             if (reason) {
                 setUsernameError({ localName, message: reason })
                 setStep(null)
@@ -148,7 +148,8 @@ export function CreateAccountForm({ ownerAddress, onCreated, onBack }: {
             setStep({ status: "creating" })
             if (!wallet) throw new OnboardingError("Connect your wallet")
             const account = await createLensAccount(auth, onboarding, wallet, { localName, metadataUri })
-            created.current = { address: account.address, localName: account.username?.localName ?? localName }
+            // account.username is its global Lens username, which it has none of in the app's namespace
+            created.current = { address: account.address, localName }
         }
         setStep({ status: "signing-in" })
         await signInToCreatedAccount(auth, onboarding, created.current.address)
