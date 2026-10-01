@@ -281,7 +281,8 @@ function MyAccountDialog() {
 
 `required` is true while a wallet is connected without a Lens account signed in: the dialog shouldn't
 close then (`setOpen(false)` is ignored). `AccountPicker` has no horizontal padding, so give it your
-dialog's. `CreateAccountForm` is exported too, and the lower-level building blocks
+dialog's. Pass buttons of your own (such as one to sign out) as `actions` to show them in its button
+group, under "Create a new account" or the create form's buttons. `CreateAccountForm` is exported too, and the lower-level building blocks
 (`auth.requestChallenge`, `auth.authenticate`, `createLensAccount`, `uploadAccountMetadata`, …) are in
 the main entry.
 

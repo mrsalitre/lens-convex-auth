@@ -27,7 +27,7 @@ export function AccountDialog() {
 
   const leave = (
     // Without a Lens session there's only the wallet to disconnect; when switching accounts, it logs out too
-    <Button onClick={signOut} variant="secondary" className="w-full">
+    <Button onClick={signOut} variant="ghost" className="w-full">
       {required ? "Disconnect Wallet" : "Log Out"}
     </Button>
   )
@@ -45,8 +45,7 @@ export function AccountDialog() {
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
-          <AccountPicker />
-          <div className="mt-4">{leave}</div>
+          <AccountPicker actions={leave} />
         </DialogContent>
       </Dialog>
     )
@@ -59,10 +58,9 @@ export function AccountDialog() {
           <DrawerTitle>{title}</DrawerTitle>
           <DrawerDescription>{description}</DrawerDescription>
         </DrawerHeader>
-        <div className="px-4">
-          <AccountPicker />
+        <div className="px-4 pb-4">
+          <AccountPicker actions={leave} />
         </div>
-        <div className="p-4">{leave}</div>
       </DrawerContent>
     </Drawer>
   )
@@ -70,7 +68,8 @@ export function AccountDialog() {
 
 // The account dialog's content without the dialog: the account list, or the form to create one. Render it
 // in your own dialog along with useAccountDialog(), which has its title. It has no horizontal padding.
-export function AccountPicker() {
+// `actions` (e.g. a button to sign out) go in its button group, under "Create a new account" or the form's.
+export function AccountPicker({ actions }: { actions?: React.ReactNode }) {
   const { wallet } = useLensAuth()
   const { open } = useAccountDialogState()
   const [creating, setCreating] = React.useState(false)
@@ -81,13 +80,14 @@ export function AccountPicker() {
   }, [open])
 
   if (!wallet) return null
-  return <AccountPickerBody key={wallet.address} wallet={wallet} creating={creating} setCreating={setCreating} />
+  return <AccountPickerBody key={wallet.address} wallet={wallet} creating={creating} setCreating={setCreating} actions={actions} />
 }
 
-function AccountPickerBody({ wallet, creating, setCreating }: {
+function AccountPickerBody({ wallet, creating, setCreating, actions }: {
   wallet: ThirdwebAccount
   creating: boolean
   setCreating: (creating: boolean) => void
+  actions?: React.ReactNode
 }) {
   const { auth } = useLensAuth()
   const { completeSignIn, setHeader } = useAccountDialogState()
@@ -131,9 +131,10 @@ function AccountPickerBody({ wallet, creating, setCreating }: {
       ownerAddress={wallet.address}
       onCreated={handleCreated}
       onBack={hasAccounts ? () => setCreating(false) : undefined}
+      actions={actions}
     />
   ) : (
-    <AccountList auth={auth} accounts={accounts} usernameOf={usernameOf} loading={loading} ownerAddress={wallet.address} onSign={signIn} onCreate={() => setCreating(true)} />
+    <AccountList auth={auth} accounts={accounts} usernameOf={usernameOf} loading={loading} ownerAddress={wallet.address} onSign={signIn} onCreate={() => setCreating(true)} actions={actions} />
   )
 }
 
@@ -176,7 +177,7 @@ function fetchChallenge(auth: LensAuth, acc: SelectableAccount, ownerAddress: st
   })
 }
 
-function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign, onCreate }: {
+function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign, onCreate, actions }: {
   auth: LensAuth
   accounts?: readonly AccountAvailable[]
   usernameOf: (account: Account) => string | null
@@ -184,6 +185,7 @@ function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign
   ownerAddress: string
   onSign: (account: SelectableAccount, challenge: LensChallenge) => Promise<void>
   onCreate: () => void
+  actions?: React.ReactNode
 }) {
   const [step, setStep] = React.useState<SignInStep | null>(null)
   const [errorId, setErrorId] = React.useState<string | null>(null)
@@ -264,8 +266,9 @@ function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign
 
   if (loading) {
     return (
-      <div className="py-4">
+      <div className="py-4 space-y-3">
         <p className="text-sm text-muted-foreground">Loading available profiles…</p>
+        {actions && <div className="flex flex-col gap-2">{actions}</div>}
       </div>
     )
   }
@@ -305,9 +308,12 @@ function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign
           )
         })}
       </ul>
-      <Button className="w-full" onClick={onCreate} disabled={step?.status === "loading"}>
-        Create a new account
-      </Button>
+      <div className="flex flex-col gap-2">
+        <Button className="w-full" onClick={onCreate} disabled={step?.status === "loading"}>
+          Create a new account
+        </Button>
+        {actions}
+      </div>
     </div>
   )
 }
