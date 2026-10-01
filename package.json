@@ -1,6 +1,6 @@
 {
   "name": "lens-convex-auth",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Drop-in sign-in for Lens apps: thirdweb wallet, Lens account sign-in and creation, and Convex auth.",
   "license": "MIT",
   "author": "Jean Ayala <hola@jeanayala.xyz>",

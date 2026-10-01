@@ -48,10 +48,12 @@ const USERNAME_DEBOUNCE_MS = 300
 const MAX_PICTURE_BYTES = 10 * 1024 * 1024
 
 // Render with `key={ownerAddress}`: the onboarding session belongs to the wallet that signed it.
-export function CreateAccountForm({ ownerAddress, onCreated, onBack }: {
+export function CreateAccountForm({ ownerAddress, onCreated, onBack, actions }: {
     ownerAddress: string
     onCreated: (account: CreatedAccount) => Promise<void>
     onBack?: () => void
+    /** More buttons, shown under the form's own */
+    actions?: React.ReactNode
 }) {
     const { auth } = useLensAuth()
     const activeAccount = useActiveAccount()
@@ -335,6 +337,7 @@ export function CreateAccountForm({ ownerAddress, onCreated, onBack }: {
                             Back to your accounts
                         </Button>
                     )}
+                    {actions}
                 </Field>
             </FieldGroup>
         </form>
