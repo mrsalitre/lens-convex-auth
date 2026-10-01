@@ -261,9 +261,29 @@ if (session) await fetchMutation(api.users.ensureCurrentUser, {}, { token: await
 
 ### Your own dialog placement or UI
 
-Pass `accountDialog={false}` and render `<AccountDialog />` where you want it. `CreateAccountForm` is
-exported too, and the lower-level building blocks (`auth.requestChallenge`, `auth.authenticate`,
-`createLensAccount`, `uploadAccountMetadata`, …) are in the main entry.
+Pass `accountDialog={false}` and render `<AccountDialog />` where you want it.
+
+To match your app's own dialogs, render `<AccountPicker />` (the account list, or the form to create
+one) inside them instead. `useAccountDialog()` has the dialog's state and its title:
+
+```tsx
+import { AccountPicker, useAccountDialog } from "lens-convex-auth/react"
+
+function MyAccountDialog() {
+  const { open, required, setOpen, title, description } = useAccountDialog()
+  return (
+    <MyDialog open={open} onOpenChange={setOpen} dismissible={!required} title={title} description={description}>
+      <AccountPicker />
+    </MyDialog>
+  )
+}
+```
+
+`required` is true while a wallet is connected without a Lens account signed in: the dialog shouldn't
+close then (`setOpen(false)` is ignored). `AccountPicker` has no horizontal padding, so give it your
+dialog's. `CreateAccountForm` is exported too, and the lower-level building blocks
+(`auth.requestChallenge`, `auth.authenticate`, `createLensAccount`, `uploadAccountMetadata`, …) are in
+the main entry.
 
 ### Without Convex
 

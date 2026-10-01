@@ -5,7 +5,7 @@ import type { Account as ThirdwebAccount } from "thirdweb/wallets"
 import { Loader2 } from "lucide-react"
 import { CHALLENGE_MAX_AGE_MS, CHALLENGE_REFRESH_MS, opensWalletWithDeepLink, type LensAuth, type LensChallenge } from "../core/auth"
 import { fetchAccountUsername } from "../core/onboarding"
-import { useAccountDialogState, useLensAuth } from "./provider"
+import { useAccountDialog, useAccountDialogState, useLensAuth } from "./provider"
 import { CreateAccountForm, type CreatedAccount } from "./CreateAccountForm"
 import { useMediaQuery } from "./dom"
 import { Button } from "./ui/button"
@@ -16,27 +16,19 @@ import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } f
 // wallet connects without a Lens session, and can't be dismissed until an account is signed in to (or
 // the wallet disconnects). A dialog on desktop, a drawer on mobile.
 export function AccountDialog() {
-  const { wallet, signOut } = useLensAuth()
-  const { open, required, setOpen } = useAccountDialogState()
+  const { signOut } = useLensAuth()
+  const { open, required, setOpen, title, description } = useAccountDialog()
   const isDesktop = useMediaQuery("(min-width: 768px)")
-  const [creating, setCreating] = React.useState(false)
-
-  // Show the account list again the next time the dialog opens
-  React.useEffect(() => {
-    if (!open) setCreating(false)
-  }, [open])
 
   const handleOpenChange = (next: boolean) => {
     if (!next && required) return
     setOpen(next)
   }
 
-  const body = wallet
-    ? <AccountDialogBody key={wallet.address} wallet={wallet} creating={creating} setCreating={setCreating} />
-    : null
-  const disconnect = (
-    <Button onClick={signOut} variant="outline" className="w-full">
-      Disconnect Wallet
+  const leave = (
+    // Without a Lens session there's only the wallet to disconnect; when switching accounts, it logs out too
+    <Button onClick={signOut} variant="secondary" className="w-full">
+      {required ? "Disconnect Wallet" : "Log Out"}
     </Button>
   )
 
@@ -49,8 +41,12 @@ export function AccountDialog() {
           onEscapeKeyDown={(e) => required && e.preventDefault()}
           onPointerDownOutside={(e) => required && e.preventDefault()}
         >
-          {body}
-          <div className="mt-4">{disconnect}</div>
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>{description}</DialogDescription>
+          </DialogHeader>
+          <AccountPicker />
+          <div className="mt-4">{leave}</div>
         </DialogContent>
       </Dialog>
     )
@@ -59,21 +55,42 @@ export function AccountDialog() {
   return (
     <Drawer open={open} onOpenChange={handleOpenChange} dismissible={!required}>
       <DrawerContent className="max-h-[80vh] overflow-y-auto">
-        {body}
-        <div className="p-4">{disconnect}</div>
+        <DrawerHeader className="text-left">
+          <DrawerTitle>{title}</DrawerTitle>
+          <DrawerDescription>{description}</DrawerDescription>
+        </DrawerHeader>
+        <div className="px-4">
+          <AccountPicker />
+        </div>
+        <div className="p-4">{leave}</div>
       </DrawerContent>
     </Drawer>
   )
 }
 
-function AccountDialogBody({ wallet, creating, setCreating }: {
+// The account dialog's content without the dialog: the account list, or the form to create one. Render it
+// in your own dialog along with useAccountDialog(), which has its title. It has no horizontal padding.
+export function AccountPicker() {
+  const { wallet } = useLensAuth()
+  const { open } = useAccountDialogState()
+  const [creating, setCreating] = React.useState(false)
+
+  // Show the account list again the next time the dialog opens
+  React.useEffect(() => {
+    if (!open) setCreating(false)
+  }, [open])
+
+  if (!wallet) return null
+  return <AccountPickerBody key={wallet.address} wallet={wallet} creating={creating} setCreating={setCreating} />
+}
+
+function AccountPickerBody({ wallet, creating, setCreating }: {
   wallet: ThirdwebAccount
   creating: boolean
   setCreating: (creating: boolean) => void
 }) {
   const { auth } = useLensAuth()
-  const { completeSignIn } = useAccountDialogState()
-  const isDesktop = useMediaQuery("(min-width: 768px)")
+  const { completeSignIn, setHeader } = useAccountDialogState()
   const { data, loading: loadingAccounts } = useAccountsAvailable({ managedBy: evmAddress(wallet.address), includeOwned: true })
   const accounts = data?.items
   const usernames = useAccountUsernames(auth, accounts)
@@ -104,28 +121,19 @@ function AccountDialogBody({ wallet, creating, setCreating }: {
     ? hasAccounts ? "Pick a username for your new Lens account." : "You don’t have a Lens account yet. Create one to continue."
     : "Select an account to continue."
 
-  const Header = isDesktop ? DialogHeader : DrawerHeader
-  const Title = isDesktop ? DialogTitle : DrawerTitle
-  const Description = isDesktop ? DialogDescription : DrawerDescription
+  // The dialog around the picker shows these, so they're set before it paints
+  React.useLayoutEffect(() => {
+    setHeader({ title, description })
+  }, [setHeader, title, description])
 
-  return (
-    <>
-      <Header className={isDesktop ? undefined : "text-left"}>
-        <Title>{title}</Title>
-        <Description>{description}</Description>
-      </Header>
-      <div className={isDesktop || !showCreate ? undefined : "px-4"}>
-        {showCreate ? (
-          <CreateAccountForm
-            ownerAddress={wallet.address}
-            onCreated={handleCreated}
-            onBack={hasAccounts ? () => setCreating(false) : undefined}
-          />
-        ) : (
-          <AccountList auth={auth} accounts={accounts} usernameOf={usernameOf} loading={loading} ownerAddress={wallet.address} onSign={signIn} onCreate={() => setCreating(true)} />
-        )}
-      </div>
-    </>
+  return showCreate ? (
+    <CreateAccountForm
+      ownerAddress={wallet.address}
+      onCreated={handleCreated}
+      onBack={hasAccounts ? () => setCreating(false) : undefined}
+    />
+  ) : (
+    <AccountList auth={auth} accounts={accounts} usernameOf={usernameOf} loading={loading} ownerAddress={wallet.address} onSign={signIn} onCreate={() => setCreating(true)} />
   )
 }
 
@@ -256,7 +264,7 @@ function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign
 
   if (loading) {
     return (
-      <div className="p-4">
+      <div className="py-4">
         <p className="text-sm text-muted-foreground">Loading available profiles…</p>
       </div>
     )
@@ -297,7 +305,7 @@ function AccountList({ auth, accounts, usernameOf, loading, ownerAddress, onSign
           )
         })}
       </ul>
-      <Button variant="ghost" className="w-full" onClick={onCreate} disabled={step?.status === "loading"}>
+      <Button className="w-full" onClick={onCreate} disabled={step?.status === "loading"}>
         Create a new account
       </Button>
     </div>

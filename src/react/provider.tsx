@@ -39,13 +39,25 @@ export type LensAuthContextValue = {
   openAccountDialog: () => void
 }
 
-type AccountDialogState = {
+export type AccountDialogHeader = {
+  /** "Select Account", or "Create Account" while the form to create one is shown */
+  title: string
+  description: string
+}
+
+export type AccountDialogControls = AccountDialogHeader & {
   open: boolean
-  // True while a wallet is connected without a Lens session: the dialog can't be dismissed
+  /** True while a wallet is connected without a Lens session: the dialog can't be dismissed */
   required: boolean
   setOpen: (open: boolean) => void
+}
+
+type AccountDialogState = AccountDialogControls & {
+  setHeader: (header: AccountDialogHeader) => void
   completeSignIn: (account: SignedInAccount) => void
 }
+
+const DEFAULT_HEADER: AccountDialogHeader = { title: "Select Account", description: "Select an account to continue." }
 
 const LensAuthContext = React.createContext<LensAuthContextValue | null>(null)
 const AccountDialogContext = React.createContext<AccountDialogState | null>(null)
@@ -60,6 +72,12 @@ export function useAccountDialogState(): AccountDialogState {
   const ctx = React.useContext(AccountDialogContext)
   if (!ctx) throw new Error("<AccountDialog> must be used within <LensAuthProvider>")
   return ctx
+}
+
+// The account dialog's state, to render <AccountPicker /> in your own dialog (with accountDialog={false})
+export function useAccountDialog(): AccountDialogControls {
+  const { open, required, setOpen, title, description } = useAccountDialogState()
+  return { open, required, setOpen, title, description }
 }
 
 function subscribeToTokens(onChange: () => void) {
@@ -173,6 +191,7 @@ function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
   const { disconnect } = useDisconnect()
   const sessionKey = useSessionKey(auth)
   const [manualOpen, setManualOpen] = React.useState(false)
+  const [header, setHeader] = React.useState(DEFAULT_HEADER)
   const [pendingSignIn, setPendingSignIn] = React.useState<SignedInAccount | null>(null)
 
   const account = React.useMemo<SignedInAccount | null>(() => {
@@ -197,11 +216,11 @@ function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
   const signOut = React.useCallback(async () => {
     setManualOpen(false)
     writeSelectedAccount(auth, null)
-    try {
-      await auth.logout()
-    } finally {
-      if (activeWallet) disconnect(activeWallet)
-    }
+    // Both clear their state synchronously (logout before its first await), so the next render sees
+    // neither. A wallet left without a session would open the account dialog while logout() waits on
+    // the network, and a session left without a wallet would reconnect it (see AutoConnect below).
+    if (activeWallet) disconnect(activeWallet)
+    await auth.logout()
   }, [auth, activeWallet, disconnect])
 
   const value = React.useMemo<LensAuthContextValue>(() => ({
@@ -219,6 +238,8 @@ function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
   const dialog = React.useMemo<AccountDialogState>(() => ({
     open: required || (manualOpen && !!wallet),
     required,
+    ...header,
+    setHeader,
     setOpen: (open) => {
       if (open) setManualOpen(true)
       else if (!required) setManualOpen(false)
@@ -228,7 +249,7 @@ function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
       setManualOpen(false)
       if (onSignIn) setPendingSignIn(signedIn)
     },
-  }), [auth, required, manualOpen, wallet, onSignIn])
+  }), [auth, required, manualOpen, wallet, header, onSignIn])
 
   return (
     <LensAuthContext.Provider value={value}>
