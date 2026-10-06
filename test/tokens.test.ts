@@ -90,6 +90,84 @@ describe("TokenService", () => {
     expect(await s.getFreshIdToken()).toBeNull()
     expect(s.getStoredTokens()).toBeNull()
   })
+
+  it("a refresh that finishes after another session was stored leaves that session alone", async () => {
+    let respond!: (response: Response) => void
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => (respond = resolve))))
+    const s = service()
+    s.storeCredentials(tokens(0.5))
+    const refreshing = s.refreshTokens()
+    const next = tokens(10, "-next")
+    s.storeCredentials(next)
+    respond(Response.json({ data: { refresh: tokens(10, "-old") } }))
+    expect((await refreshing)?.refreshToken).toBe("refresh-next")
+    expect(s.getStoredTokens()?.refreshToken).toBe("refresh-next")
+  })
+
+  it("a refused refresh of a replaced session doesn't clear the new one", async () => {
+    let respond!: (response: Response) => void
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => (respond = resolve))))
+    const s = service()
+    s.storeCredentials(tokens(0.5))
+    const refreshing = s.refreshTokens()
+    s.storeCredentials(tokens(10, "-next"))
+    respond(Response.json({ data: { refresh: { reason: "revoked" } } }))
+    await refreshing
+    expect(s.getStoredTokens()?.refreshToken).toBe("refresh-next")
+  })
+})
+
+describe("TokenService.revokeSession", () => {
+  const requests = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.map((call) => {
+      const init = (call as unknown as [string, RequestInit])[1]
+      return { body: JSON.parse(init.body as string), headers: init.headers as Record<string, string> }
+    })
+
+  it("revokes the session's authentication with its own access token, leaving storage alone", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ data: { revokeAuthentication: null } }))
+    vi.stubGlobal("fetch", fetchMock)
+    const s = service()
+    const current = tokens(10, "-current")
+    s.storeCredentials(current)
+    const old = tokens(10)
+    expect(await s.revokeSession(old)).toBe(true)
+    const [revoke] = requests(fetchMock)
+    expect(revoke.body.query).toContain("revokeAuthentication")
+    expect(revoke.body.variables).toEqual({ request: { authenticationId: "s1" } })
+    expect(revoke.headers.Authorization).toBe(`Bearer ${old.accessToken}`)
+    expect(s.getStoredTokens()?.refreshToken).toBe("refresh-current")
+  })
+
+  it("refreshes an expired access token first, without storing the result", async () => {
+    const refreshed = tokens(10, "-refreshed")
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+      String(init.body).includes("refresh(")
+        ? Response.json({ data: { refresh: refreshed } })
+        : Response.json({ data: { revokeAuthentication: null } }),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const s = service()
+    expect(await s.revokeSession(tokens(0))).toBe(true)
+    const [refresh, revoke] = requests(fetchMock)
+    expect(refresh.body.variables.request.refreshToken).toBe("refresh")
+    expect(revoke.headers.Authorization).toBe(`Bearer ${refreshed.accessToken}`)
+    expect(s.getStoredTokens()).toBeNull()
+  })
+
+  it("counts a session that can't be refreshed as already ended", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ data: { refresh: { reason: "expired" } } }))
+    vi.stubGlobal("fetch", fetchMock)
+    expect(await service().revokeSession(tokens(0))).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports failure when the API can't be reached or refuses", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline") }))
+    expect(await service().revokeSession(tokens(10))).toBe(false)
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ errors: [{ message: "Forbidden" }] })))
+    expect(await service().revokeSession(tokens(10))).toBe(false)
+  })
 })
 
 describe("LensTokenStorage", () => {

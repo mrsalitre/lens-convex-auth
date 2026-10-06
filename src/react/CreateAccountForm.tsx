@@ -15,7 +15,7 @@ import {
     uploadAccountMetadata,
     usernameFormatError,
 } from "../core/onboarding"
-import { useLensAuth } from "./provider"
+import { useAccountDialogState, useLensAuth } from "./provider"
 import { cn } from "./utils"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
@@ -56,6 +56,7 @@ export function CreateAccountForm({ ownerAddress, onCreated, onBack, actions }: 
     actions?: React.ReactNode
 }) {
     const { auth } = useLensAuth()
+    const { selectAccount } = useAccountDialogState()
     const activeAccount = useActiveAccount()
     const wallet = useActiveWallet()
 
@@ -154,6 +155,7 @@ export function CreateAccountForm({ ownerAddress, onCreated, onBack, actions }: 
             created.current = { address: account.address, localName }
         }
         setStep({ status: "signing-in" })
+        selectAccount({ address: created.current.address.toLowerCase(), username: created.current.localName })
         await signInToCreatedAccount(auth, onboarding, created.current.address)
         await onCreated(created.current)
     }

@@ -90,7 +90,7 @@ function AccountPickerBody({ wallet, creating, setCreating, actions }: {
   actions?: React.ReactNode
 }) {
   const { auth } = useLensAuth()
-  const { completeSignIn, setHeader } = useAccountDialogState()
+  const { selectAccount, completeSignIn, setHeader } = useAccountDialogState()
   const { data, loading: loadingAccounts } = useAccountsAvailable({ managedBy: evmAddress(wallet.address), includeOwned: true })
   const accounts = data?.items
   const usernames = useAccountUsernames(auth, accounts)
@@ -108,8 +108,10 @@ function AccountPickerBody({ wallet, creating, setCreating, actions }: {
     // The signature request goes out before the first await, so a click handler calling this keeps its
     // user gesture, which mobile wallets need to open (see signLensChallenge).
     const signature = await auth.signChallenge(challenge, wallet)
+    const signedIn = { address: account.address.toLowerCase(), username: usernameOf(account) }
+    selectAccount(signedIn)
     await auth.authenticate(challenge, signature)
-    completeSignIn({ address: account.address.toLowerCase(), username: usernameOf(account) })
+    completeSignIn(signedIn)
   }
 
   const handleCreated = async (created: CreatedAccount) => {

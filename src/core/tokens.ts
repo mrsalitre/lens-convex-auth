@@ -1,5 +1,5 @@
 import { LENS_TOKEN_LIFETIME_MS } from "./constants"
-import { jwtExpiresAt } from "./jwt"
+import { decodeJwtPayload, jwtExpiresAt } from "./jwt"
 
 export interface TokenData {
   accessToken: string
@@ -28,6 +28,12 @@ const REFRESH_MUTATION = `
         reason
       }
     }
+  }
+`
+
+const REVOKE_MUTATION = `
+  mutation RevokeAuthentication($request: RevokeAuthenticationRequest!) {
+    revokeAuthentication(request: $request)
   }
 `
 
@@ -126,6 +132,30 @@ export class TokenService {
     return this.refreshPromise
   }
 
+  // Ends a session on the Lens API, so its tokens stop working even if they were copied out of this
+  // browser. Takes the session's tokens rather than the stored ones, because by the time a session is
+  // revoked the storage already holds the next one (or nothing). Its refresh token stops working right
+  // away; an access or ID token already issued stays valid until it expires (10 minutes at most).
+  // Resolves false when the API couldn't be reached or refused.
+  async revokeSession(tokens: LensCredentials): Promise<boolean> {
+    const authenticationId = decodeJwtPayload(tokens.idToken)?.sid
+    if (typeof authenticationId !== "string") return false
+    try {
+      // Revoking needs a valid access token for the session itself
+      let accessToken = tokens.accessToken
+      if ((jwtExpiresAt(accessToken) ?? 0) <= Date.now() + REFRESH_BUFFER_MS) {
+        const refreshed = await this.requestRefresh(tokens.refreshToken)
+        // A session that can't be refreshed has already ended (expired, or revoked elsewhere)
+        if (!refreshed) return true
+        accessToken = refreshed.accessToken
+      }
+      const data = await this.graphql(REVOKE_MUTATION, { request: { authenticationId } }, accessToken)
+      return !data.errors
+    } catch {
+      return false
+    }
+  }
+
   private async performRefresh(): Promise<TokenData | null> {
     const refreshToken = this.getStoredTokens()?.refreshToken
     if (!refreshToken) {
@@ -135,25 +165,33 @@ export class TokenService {
     try {
       // Resuming the Lens session only reads these same tokens back, so ask the API for new ones.
       // (Each Lens SDK session keeps its own copy of the tokens and refreshes that copy itself.)
-      const response = await fetch(this.options.graphqlUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: REFRESH_MUTATION, variables: { request: { refreshToken } } }),
-      })
-      const data = await response.json()
-      const result = data?.data?.refresh
-      if (data.errors || !result || result.reason) throw new Error(result?.reason ?? "Refresh failed")
-      const tokens: TokenData = {
-        accessToken: result.accessToken,
-        idToken: result.idToken,
-        refreshToken: result.refreshToken,
-        expiresAt: Date.now() + LENS_TOKEN_LIFETIME_MS,
-      }
+      const refreshed = await this.requestRefresh(refreshToken)
+      // Signed out, or signed in again, while the request was in flight: those tokens are for a session
+      // that's no longer this browser's
+      if (this.getStoredTokens()?.refreshToken !== refreshToken) return this.getStoredTokens()
+      if (!refreshed) throw new Error("Refresh refused")
+      const tokens: TokenData = { ...refreshed, expiresAt: Date.now() + LENS_TOKEN_LIFETIME_MS }
       this.storeTokens(tokens)
       return tokens
     } catch {
-      this.clearTokens()
+      if (this.getStoredTokens()?.refreshToken === refreshToken) this.clearTokens()
       return null
     }
+  }
+
+  // New tokens for a session, from its refresh token. Doesn't store them. Null when the API refuses (the
+  // session has ended); throws when it can't be reached.
+  private async requestRefresh(refreshToken: string): Promise<LensCredentials | null> {
+    const data = await this.graphql(REFRESH_MUTATION, { request: { refreshToken } })
+    const result = data?.data?.refresh
+    if (data?.errors || !result?.accessToken || !result.idToken || !result.refreshToken) return null
+    return { accessToken: result.accessToken, idToken: result.idToken, refreshToken: result.refreshToken }
+  }
+
+  private async graphql(query: string, variables: Record<string, unknown>, accessToken?: string) {
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`
+    const response = await fetch(this.options.graphqlUrl, { method: "POST", headers, body: JSON.stringify({ query, variables }) })
+    return response.json()
   }
 }

@@ -33,8 +33,12 @@ export type LensAuthContextValue = {
   wallet: ThirdwebAccount | undefined
   /** The signed-in Lens account */
   account: SignedInAccount | null
-  /** Ends the Lens session and disconnects the wallet */
-  signOut: () => Promise<void>
+  /**
+   * Ends the Lens session and disconnects the wallet. The session is revoked on the Lens API, so its tokens
+   * stop working even if they were copied; `revoked` is false when that failed (the session is cleared
+   * from this browser either way).
+   */
+  signOut: () => Promise<{ revoked: boolean }>
   /** Opens the account dialog, e.g. to switch to another account */
   openAccountDialog: () => void
 }
@@ -54,6 +58,8 @@ export type AccountDialogControls = AccountDialogHeader & {
 
 type AccountDialogState = AccountDialogControls & {
   setHeader: (header: AccountDialogHeader) => void
+  /** Call before authenticating as the account, so its username shows as soon as its session is stored */
+  selectAccount: (account: SignedInAccount) => void
   completeSignIn: (account: SignedInAccount) => void
 }
 
@@ -126,7 +132,13 @@ export type LensAuthProviderProps = {
    * Called after the user signs in from the account dialog (picking an account or creating one), once
    * Convex accepts the session. A good place to create the user's row: `convex.mutation(api.users.ensure)`
    */
-  onSignIn?: (account: SignedInAccount) => void | Promise<void>
+  onSignIn?: (account: SignedInAccount) => unknown
+  /**
+   * Called when the signed-in Lens account changes, however it happens: signing in, switching accounts,
+   * logging out, or the session ending (it expired, or another tab logged out). Not called when a stored
+   * session is restored on load. A good place to delete data your app keeps in the browser for `previous`.
+   */
+  onAccountChange?: (previous: SignedInAccount | null, next: SignedInAccount | null) => unknown
   /** Render the account dialog. Set to false to render <AccountDialog /> yourself. Defaults to true. */
   accountDialog?: boolean
   /**
@@ -141,10 +153,10 @@ export type LensAuthProviderProps = {
 const AutoConnect = React.lazy(() => import("thirdweb/react").then((m) => ({ default: m.AutoConnect })))
 
 // Wraps the app in thirdweb, Lens and (optionally) Convex providers wired to one session.
-export function LensAuthProvider({ auth, convex, onSignIn, accountDialog = true, wallets, children }: LensAuthProviderProps) {
+export function LensAuthProvider({ auth, convex, onSignIn, onAccountChange, accountDialog = true, wallets, children }: LensAuthProviderProps) {
   const [useConvexAuthHook] = React.useState(() => createUseConvexAuth(auth))
   const content = (
-    <LensAuthState auth={auth} onSignIn={onSignIn} withConvex={!!convex} wallets={wallets}>
+    <LensAuthState auth={auth} onSignIn={onSignIn} onAccountChange={onAccountChange} withConvex={!!convex} wallets={wallets}>
       {children}
       {accountDialog && <AccountDialog />}
     </LensAuthState>
@@ -179,9 +191,10 @@ function writeSelectedAccount(auth: LensAuth, account: SignedInAccount | null) {
   } catch {}
 }
 
-function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
+function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, children }: {
   auth: LensAuth
   onSignIn?: LensAuthProviderProps["onSignIn"]
+  onAccountChange?: LensAuthProviderProps["onAccountChange"]
   withConvex: boolean
   wallets?: Wallet[]
   children: React.ReactNode
@@ -193,12 +206,16 @@ function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
   const [manualOpen, setManualOpen] = React.useState(false)
   const [header, setHeader] = React.useState(DEFAULT_HEADER)
   const [pendingSignIn, setPendingSignIn] = React.useState<SignedInAccount | null>(null)
+  // The account being signed in to from the dialog. Its session is stored (and read back as sessionKey)
+  // before completeSignIn saves it, so without this the account would show without its username.
+  const [selected, setSelected] = React.useState<SignedInAccount | null>(null)
 
   const account = React.useMemo<SignedInAccount | null>(() => {
     if (!sessionKey) return null
     const address = sessionKey.slice(sessionKey.lastIndexOf(":") + 1)
-    return { address, username: readSelectedAccount(auth, address) }
-  }, [auth, sessionKey])
+    const username = selected?.address === address ? selected.username : readSelectedAccount(auth, address)
+    return { address, username }
+  }, [auth, sessionKey, selected])
 
   const status: LensAuthStatus =
     sessionKey === undefined ? "loading"
@@ -207,6 +224,7 @@ function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
     : "signed-out"
 
   useBackgroundRefresh(auth)
+  useAccountChange(status, account, onAccountChange)
 
   // A connected wallet checks the stored session is still valid (refreshing it or clearing it)
   React.useEffect(() => {
@@ -215,12 +233,13 @@ function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
 
   const signOut = React.useCallback(async () => {
     setManualOpen(false)
+    setSelected(null)
     writeSelectedAccount(auth, null)
     // Both clear their state synchronously (logout before its first await), so the next render sees
     // neither. A wallet left without a session would open the account dialog while logout() waits on
     // the network, and a session left without a wallet would reconnect it (see AutoConnect below).
     if (activeWallet) disconnect(activeWallet)
-    await auth.logout()
+    return auth.logout()
   }, [auth, activeWallet, disconnect])
 
   const value = React.useMemo<LensAuthContextValue>(() => ({
@@ -240,11 +259,13 @@ function LensAuthState({ auth, onSignIn, withConvex, wallets, children }: {
     required,
     ...header,
     setHeader,
+    selectAccount: setSelected,
     setOpen: (open) => {
       if (open) setManualOpen(true)
       else if (!required) setManualOpen(false)
     },
     completeSignIn: (signedIn) => {
+      setSelected(signedIn)
       writeSelectedAccount(auth, signedIn)
       setManualOpen(false)
       if (onSignIn) setPendingSignIn(signedIn)
@@ -290,6 +311,31 @@ function SignInCallback({ account, onSignIn, done }: SignInCallbackProps) {
 function ConvexSignInCallback(props: SignInCallbackProps) {
   const { isAuthenticated, isLoading } = useConvexAuth()
   return isAuthenticated && !isLoading ? <SignInCallback {...props} /> : null
+}
+
+// Calls onAccountChange when the signed-in account changes, from the first account known after loading
+function useAccountChange(
+  status: LensAuthStatus,
+  account: SignedInAccount | null,
+  onAccountChange: LensAuthProviderProps["onAccountChange"],
+) {
+  const last = React.useRef<SignedInAccount | null | undefined>(undefined)
+  const callback = React.useRef(onAccountChange)
+  React.useEffect(() => {
+    callback.current = onAccountChange
+  })
+  const loading = status === "loading"
+  const address = account?.address ?? null
+  React.useEffect(() => {
+    if (loading) return
+    const previous = last.current
+    last.current = account
+    if (previous === undefined || (previous?.address ?? null) === address) return
+    Promise.resolve()
+      .then(() => callback.current?.(previous, account))
+      .catch((err) => console.error("lens-convex-auth: onAccountChange failed", err))
+    // Only the address counts: the username arriving for the same account isn't a change
+  }, [loading, address])
 }
 
 // Refreshes the tokens a minute before they expire, so Convex and API calls always have a fresh one

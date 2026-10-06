@@ -177,11 +177,12 @@ export async function fetchAccountUsername(auth: LensAuth, accountAddress: strin
 }
 
 // Signs the app in to the new account without another signature: the onboarding session switches to it,
-// and its tokens are handed to the app's Lens client, like a sign-in from the account list.
+// and its tokens are handed to the app's Lens client, like a sign-in from the account list (which revokes
+// the session it replaces, when creating an account while signed in to another).
 export async function signInToCreatedAccount(auth: LensAuth, session: SessionClient, accountAddress: string): Promise<void> {
   const switched = await session.switchAccount({ account: evmAddress(accountAddress) })
   if (switched.isErr()) throw switched.error
-  auth.tokens.storeCredentials(sessionCredentials(switched.value))
+  await auth.startSession(sessionCredentials(switched.value))
   const resumed = await auth.lensClient.resumeSession()
   if (resumed.isErr()) throw resumed.error
 }
