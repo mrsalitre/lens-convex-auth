@@ -7,6 +7,7 @@ creation, and **Convex** auth, wired to one session.
 - An account dialog that lists the wallet's Lens accounts, or creates one (username, name, bio, picture)
 - Works on mobile wallets: challenges are fetched ahead of time, so the tap that signs can open the wallet app
 - Lens tokens are kept fresh in the background and shared by the Lens SDK, Convex, and your API routes
+- Switching accounts and logging out revoke the Lens session, so tokens copied from the browser stop working
 - Convex functions know which Lens account is calling (`requireLensAccount(ctx)`)
 
 ```
@@ -161,7 +162,8 @@ export function Navbar() {
 ```
 
 Connecting a wallet opens the account dialog, which stays open until the user signs in to an account
-(or disconnects). The button then becomes `Logout`.
+(or disconnects). The button then becomes `Logout`. Switching to another account from the dialog
+revokes the previous account's session (see [Security](#security)).
 
 In Convex functions:
 
@@ -227,6 +229,26 @@ export const ensureCurrentUser = mutation({
   },
 })
 ```
+
+### Delete your app's data when the account changes
+
+If your app keeps anything in the browser for the signed-in account (drafts, caches, keys in IndexedDB),
+delete it in `onAccountChange`. It runs when the signed-in account changes, however that happens:
+signing in, switching accounts, logging out, or the session ending (it expired, or another tab logged
+out). It doesn't run when a stored session is restored on load.
+
+```tsx
+<LensAuthProvider
+  auth={auth}
+  convex={convex}
+  onAccountChange={async (previous, next) => {
+    if (previous) await deleteLocalData(previous.address)
+  }}
+>
+```
+
+It runs after the change, so it can't call Convex as `previous`. To do something as the account before it
+logs out, do it before calling `signOut()`.
 
 ### Protect your own API routes
 
@@ -310,7 +332,13 @@ Omit the `convex` prop. Everything else works the same.
 | `usernameNamespace` | global Lens namespace | Namespace (0x…) new accounts get their username in. The account list shows usernames from it first, then the global one, then any other |
 
 Returns `auth` with `thirdwebClient`, `chain`, `lensClient`, `tokens`, `getSession()`,
-`resumeSession()`, `requestChallenge()`, `authenticate()`, `logout()`, `fetch()` and `fetchConvexToken()`.
+`resumeSession()`, `requestChallenge()`, `authenticate()`, `startSession()`, `logout()`, `fetch()` and
+`fetchConvexToken()`.
+
+- `authenticate(challenge, signature)` and `startSession(credentials)` make a session the app's, and revoke
+  the session they replace. `startSession` resolves `false` when that revocation failed.
+- `logout()` clears the session from the browser, then revokes it. Resolves `{ revoked }`, false when the
+  Lens API couldn't be reached or refused.
 
 ### `<LensAuthProvider>` (`lens-convex-auth/react`)
 
@@ -319,12 +347,16 @@ Returns `auth` with `thirdwebClient`, `chain`, `lensClient`, `tokens`, `getSessi
 | `auth` | From `createLensAuth` |
 | `convex` | Your `ConvexReactClient` (optional) |
 | `onSignIn(account)` | Called after a sign-in from the dialog, once Convex accepts it |
+| `onAccountChange(previous, next)` | Called when the signed-in account changes: sign-in, switch, log out, or the session ending. See the recipe above |
 | `accountDialog` | Render the account dialog (default `true`) |
 | `wallets` | Wallets to reconnect after a reload while a Lens session is stored (default: thirdweb's). Pass the same list as `SignInButton`'s `connectButtonProps.wallets` if you customize it |
 
 ### `useLensAuth()`
 
 `{ status, isLoading, isSignedIn, wallet, account, signOut, openAccountDialog, auth }`
+
+`signOut()` disconnects the wallet and logs out, revoking the session. It resolves `{ revoked }`, false
+when revoking failed (the session is cleared from the browser either way), so you can tell the user.
 
 `status` is `"loading"` (first render and SSR), `"signed-out"`, `"choosing-account"` (wallet connected,
 no Lens account yet) or `"signed-in"`. `account` is `{ address, username }`.
@@ -362,6 +394,29 @@ Options: `lensAppAddress` (required), `environment`, and for Convex tokens `priv
 ### CLI
 
 - `npx lens-convex-auth keys [--kid <id>]`: generates a key pair for Convex tokens
+
+## Security
+
+What the browser holds while someone is signed in, and what ends it:
+
+| Stored | Where | What it allows | Ended by |
+| --- | --- | --- | --- |
+| Lens access, ID and refresh tokens | `localStorage` (`lens_access_token`, `lens_id_token`, `lens_refresh_token`) | Acting as the Lens account through the Lens API, and getting Convex tokens from your token route | Switching accounts or logging out: the session is revoked on the Lens API |
+| Selected account | `localStorage` (`lens_account`) | Nothing: its address and username | Logging out |
+| Convex token | Memory | Calling Convex as the account | Expires with the Lens ID token |
+| thirdweb wallet session | thirdweb's own storage | Email, social and passkey wallets: signing as the wallet, which owns its Lens accounts. Extension and mobile wallets keep their keys to themselves | Logging out disconnects the wallet. thirdweb clears its session from the browser; it doesn't revoke it on its servers |
+
+Revoking stops the refresh token right away. An access or ID token already issued stays valid until it
+expires, 10 minutes at most, because your server and Convex verify tokens by signature without asking
+Lens. A copied session is cut off within those 10 minutes.
+
+`localStorage` is readable by any script running on your pages, so a cross-site scripting bug, or a
+script you load from a compromised source, can copy these tokens. Revocation limits how long a copy
+works; it doesn't prevent the copy. Keep scripts off your pages with a Content Security Policy, and load
+third-party scripts only from sources you trust.
+
+If revoking fails (offline, or the Lens API is down), the session is still cleared from the browser,
+`signOut()` resolves `{ revoked: false }`, and the refresh token works until Lens expires it.
 
 ## Troubleshooting
 

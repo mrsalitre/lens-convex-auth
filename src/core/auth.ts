@@ -3,7 +3,7 @@ import { createThirdwebClient, type ThirdwebClient } from "thirdweb"
 import type { Chain } from "thirdweb/chains"
 import type { Chain as ViemChain } from "viem"
 import { ADDRESS_RE, DEFAULT_CONVEX_TOKEN_ENDPOINT, lensApiOrigin, type LensEnvironmentName } from "./constants"
-import { lensSessionFromIdToken } from "./jwt"
+import { decodeJwtPayload, lensSessionFromIdToken } from "./jwt"
 import { LensTokenStorage } from "./storage"
 import { TokenService, type LensCredentials } from "./tokens"
 import { lensThirdwebChain, lensViemChain } from "./wallet"
@@ -93,6 +93,8 @@ export function createLensAuth(options: LensAuthOptions) {
     storage: typeof window !== "undefined" ? new LensTokenStorage(tokens, `${storagePrefix}custom_`) : undefined,
   })
 
+  const sessionIdOf = (idToken: string) => decodeJwtPayload(idToken)?.sid
+
   // The signed-in account, or null when signed out
   function getSession(): LensSessionInfo | null {
     const idToken = tokens.getStoredTokens()?.idToken
@@ -126,17 +128,43 @@ export function createLensAuth(options: LensAuthOptions) {
   }
 
   async function authenticate(challenge: LensChallenge, signature: string): Promise<SessionClient> {
+    // Read first: the Lens client stores the new session's tokens itself, through LensTokenStorage
+    const previous = tokens.getStoredTokens()
     const authenticated = await lensClient.authenticate({ id: challenge.id, signature: signatureFrom(signature) })
     if (authenticated.isErr()) throw authenticated.error
-    tokens.storeCredentials(sessionCredentials(authenticated.value))
+    const credentials = sessionCredentials(authenticated.value)
+    tokens.storeCredentials(credentials)
+    await revokeReplacedSession(previous, credentials)
     return authenticated.value
   }
 
-  async function logout(): Promise<void> {
+  // Makes these the app's session, like a sign-in (used for accounts created on another Lens client).
+  async function startSession(credentials: LensCredentials): Promise<boolean> {
+    const previous = tokens.getStoredTokens()
+    tokens.storeCredentials(credentials)
+    return revokeReplacedSession(previous, credentials)
+  }
+
+  // Switching accounts revokes the session switched away from, so its tokens stop working even if they
+  // were copied out of this browser. The new session is stored first: it doesn't wait on the revocation,
+  // and a failed one doesn't undo it. False when the previous session couldn't be revoked.
+  async function revokeReplacedSession(previous: LensCredentials | null, next: LensCredentials): Promise<boolean> {
+    if (!previous || sessionIdOf(previous.idToken) === sessionIdOf(next.idToken)) return true
+    const revoked = await tokens.revokeSession(previous)
+    if (!revoked) console.warn("lens-convex-auth: couldn't revoke the previous Lens session")
+    return revoked
+  }
+
+  // Signs out: clears the session from this browser, then revokes it on the Lens API, so its tokens
+  // stop working even if they were copied. Resolves `revoked: false` when there was a session and the
+  // API couldn't be reached or refused; it's cleared from this browser either way.
+  async function logout(): Promise<{ revoked: boolean }> {
+    const previous = tokens.getStoredTokens()
     tokens.clearTokens()
-    // PublicClient has no logout; logout exists on SessionClient
-    const session = lensClient.currentSession
-    if (session && session.isSessionClient()) await session.logout()
+    // Lens SDK calls and hooks act as the public client again. (The SDK's own logout() would revoke with
+    // the session's in-memory copy of the tokens, which the background refresh may have replaced.)
+    lensClient.currentSession = lensClient
+    return { revoked: previous ? await tokens.revokeSession(previous) : true }
   }
 
   // fetch() with the Lens ID token as `Authorization: Bearer`, retried once with a refreshed token on 401.
@@ -183,6 +211,7 @@ export function createLensAuth(options: LensAuthOptions) {
     requestChallenge,
     signChallenge: signLensChallenge,
     authenticate,
+    startSession,
     logout,
     fetch: authFetch,
     fetchConvexToken,
