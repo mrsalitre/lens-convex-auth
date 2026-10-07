@@ -1,14 +1,14 @@
+// Headless: the provider and hooks, with no UI and no UI dependencies. The styled components are in
+// lens-convex-auth/react/ui.
 export {
   LensAuthProvider,
   useLensAuth,
   useAccountDialog,
   type AccountDialogControls,
-  type AccountDialogHeader,
   type LensAuthContextValue,
   type LensAuthProviderProps,
   type LensAuthStatus,
   type SignedInAccount,
 } from "./provider"
-export { SignInButton, type SignInButtonProps } from "./SignInButton"
-export { AccountDialog, AccountPicker } from "./AccountDialog"
-export { CreateAccountForm, type CreatedAccount } from "./CreateAccountForm"
+export { useAccountPicker, type AccountPickerState, type PickerAccount } from "./useAccountPicker"
+export { useCreateAccount, type CreateAccountState, type CreateAccountStep, type UsernameStatus } from "./useCreateAccount"

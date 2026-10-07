@@ -1,8 +1,8 @@
 import * as React from "react"
 import type { ConnectButtonProps } from "thirdweb/react"
-import { useLensAuth } from "./provider"
+import { useLensAuth } from "../provider"
 import { useDocumentTheme } from "./dom"
-import { Button } from "./ui/button"
+import { Button } from "./primitives/button"
 import { cn } from "./utils"
 
 // thirdweb's ConnectButton pulls in ~480KB (gzipped) of wallet SDKs (WalletConnect, Coinbase, ...).
@@ -23,7 +23,8 @@ export type SignInButtonProps = {
   connectButtonProps?: Partial<Omit<ConnectButtonProps, "client" | "chain" | "theme">>
 }
 
-// Connects a wallet (the account dialog then opens to pick or create a Lens account) and signs out.
+// Connects a wallet (the account dialog then opens to pick or create a Lens account) and signs out. Add
+// <AccountDialog /> too, or your own dialog: the provider doesn't render one.
 export function SignInButton({ label = "Sign in", signOutLabel = "Logout", theme, className, connectButtonProps }: SignInButtonProps) {
   const { auth, wallet, status, signOut } = useLensAuth()
   const documentTheme = useDocumentTheme()

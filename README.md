@@ -3,8 +3,11 @@
 Drop-in sign-in for [Lens](https://lens.xyz) apps: a **thirdweb** wallet, **Lens account** sign-in and
 creation, and **Convex** auth, wired to one session.
 
-- A `Sign in` button that connects any wallet thirdweb supports (injected, WalletConnect, email, passkeys, …)
-- An account dialog that lists the wallet's Lens accounts, or creates one (username, name, bio, picture)
+- Headless by default: a provider and hooks for the session, the account list and creating an account,
+  for a UI of your own
+- Optional styled components (`lens-convex-auth/react/ui`): a `Sign in` button that connects any wallet
+  thirdweb supports (injected, WalletConnect, email, passkeys, …), and an account dialog that lists the
+  wallet's Lens accounts or creates one (username, name, bio, picture)
 - Works on mobile wallets: challenges are fetched ahead of time, so the tap that signs can open the wallet app
 - Lens tokens are kept fresh in the background and shared by the Lens SDK, Convex, and your API routes
 - Switching accounts and logging out revoke the Lens session, so tokens copied from the browser stop working
@@ -28,8 +31,17 @@ verifies the Lens ID token and issues a short-lived token that Convex trusts.
 pnpm add lens-convex-auth thirdweb convex viem @lens-protocol/client @lens-protocol/react @lens-protocol/metadata @lens-chain/storage-client
 ```
 
-Requires React 19. The components are styled with Tailwind CSS v4 and
-[shadcn/ui](https://ui.shadcn.com) theme variables, so they follow your app's theme.
+Requires React 19. That's all the headless API (`lens-convex-auth/react`) needs.
+
+To use the styled components (`lens-convex-auth/react/ui`), add their dependencies too. They're optional
+peer dependencies, so apps that draw their own UI don't install them:
+
+```bash
+pnpm add @radix-ui/react-avatar @radix-ui/react-dialog @radix-ui/react-label @radix-ui/react-slot vaul lucide-react class-variance-authority clsx tailwind-merge
+```
+
+They're styled with Tailwind CSS v4 and [shadcn/ui](https://ui.shadcn.com) theme variables, so they follow
+your app's theme.
 
 ## Setup (Next.js)
 
@@ -81,6 +93,7 @@ export const auth = createLensAuth({
 
 import { ConvexReactClient } from "convex/react"
 import { LensAuthProvider } from "lens-convex-auth/react"
+import { AccountDialog } from "lens-convex-auth/react/ui"
 import { auth } from "@/lib/auth"
 
 const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!)
@@ -89,6 +102,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <LensAuthProvider auth={auth} convex={convex}>
       {children}
+      <AccountDialog />
     </LensAuthProvider>
   )
 }
@@ -112,6 +126,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 `LensAuthProvider` includes `ThirdwebProvider`, `LensProvider` and `ConvexProviderWithAuth`, so don't add
 them again. Lens React hooks and Convex hooks work anywhere inside it.
 
+The provider renders no UI. `<AccountDialog />` is the styled dialog that picks or creates the Lens account
+after a wallet connects; for your own, see [Your own account dialog](#your-own-account-dialog).
+
 ### 5. Add the token route
 
 ```ts
@@ -134,7 +151,7 @@ export default {
 }
 ```
 
-### 7. Let Tailwind see the components
+### 7. Let Tailwind see the components (styled UI only)
 
 ```css
 /* app/globals.css */
@@ -149,7 +166,7 @@ The path is relative to the CSS file. The components use the shadcn variables (`
 ### 8. Use it
 
 ```tsx
-import { SignInButton } from "lens-convex-auth/react"
+import { SignInButton } from "lens-convex-auth/react/ui"
 
 export function Navbar() {
   return (
@@ -281,37 +298,71 @@ const session = await getLensSession(request, { lensAppAddress })
 if (session) await fetchMutation(api.users.ensureCurrentUser, {}, { token: await createConvexToken(session) })
 ```
 
-### Your own dialog placement or UI
+### Your own account dialog
 
-Pass `accountDialog={false}` and render `<AccountDialog />` where you want it.
-
-To match your app's own dialogs, render `<AccountPicker />` (the account list, or the form to create
-one) inside them instead. `useAccountDialog()` has the dialog's state and its title:
+Leave out `<AccountDialog />` and build the dialog from the hooks. `useAccountDialog()` says when to show
+it, `useAccountPicker()` lists the wallet's accounts and signs in to one, and `useCreateAccount()` is the
+state of a form that creates one:
 
 ```tsx
-import { AccountPicker, useAccountDialog, useLensAuth } from "lens-convex-auth/react"
+"use client"
+import { useAccountDialog, useAccountPicker, useCreateAccount, useLensAuth } from "lens-convex-auth/react"
 
 function MyAccountDialog() {
   const { signOut } = useLensAuth()
-  const { open, required, setOpen, title, description } = useAccountDialog()
+  const { open, required, setOpen } = useAccountDialog()
+  const picker = useAccountPicker()
+  const [creating, setCreating] = React.useState(false)
+  const noAccounts = picker.status === "ready" && picker.accounts.length === 0
+
   return (
-    <MyDialog open={open} onOpenChange={setOpen} dismissible={!required} title={title} description={description}>
-      <AccountPicker
-        actions={
-          <MyButton onClick={signOut}>{required ? "Disconnect Wallet" : "Log Out"}</MyButton>
-        }
-      />
+    <MyDialog open={open} onOpenChange={setOpen} dismissible={!required}>
+      {creating || noAccounts ? (
+        <MyCreateAccountForm />
+      ) : (
+        <ul>
+          {picker.accounts.map((account) => (
+            <li key={account.id}>
+              {/* Call signIn straight from the click: on mobile that tap is what opens the wallet app */}
+              <button onClick={() => picker.signIn(account)} disabled={picker.busy}>
+                @{account.username}
+                {account.state === "signing-in" && <Spinner />}
+              </button>
+              {account.state === "tap-again" && <p>Tap again to sign in your wallet.</p>}
+              {account.state === "failed" && <p>Couldn’t sign in. Try again.</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <button onClick={() => setCreating(true)}>Create an account</button>
+      <button onClick={signOut}>{required ? "Disconnect wallet" : "Log out"}</button>
     </MyDialog>
+  )
+}
+
+function MyCreateAccountForm() {
+  const form = useCreateAccount()
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); form.submit() }}>
+      <input value={form.username} onChange={(e) => form.setUsername(e.target.value)} disabled={form.busy} />
+      {"message" in form.usernameStatus && <p>{form.usernameStatus.message}</p>}
+      {/* Name, bio and picture are optional: leave out the ones you don't ask for */}
+      <button type="submit" disabled={form.busy}>{form.step ? "Creating…" : "Create account"}</button>
+      {form.error && <p>{form.error}</p>}
+    </form>
   )
 }
 ```
 
-`required` is true while a wallet is connected without a Lens account signed in: the dialog shouldn't
-close then (`setOpen(false)` is ignored), so give it a way out, like the button above. Buttons passed
-as `actions` go in the picker's button group, under "Create a new account" or the create form's
-buttons. `AccountPicker` has no horizontal padding, so give it your dialog's. `CreateAccountForm` is
-exported too, and the lower-level building blocks (`auth.requestChallenge`, `auth.authenticate`,
-`createLensAccount`, `uploadAccountMetadata`, …) are in the main entry.
+`required` is true while a wallet is connected without a Lens account signed in: the dialog shouldn't close
+then (`setOpen(false)` is ignored), so give it a way out, like the log out button above. Signing in, or
+creating an account, closes the dialog and calls `onSignIn`.
+
+To keep the styled list and form but put them in your own dialog, render `<AccountPicker />` from
+`lens-convex-auth/react/ui` inside it. `onHeaderChange` gives the title and description for what it shows,
+and buttons passed as `actions` go in its button group. The lower-level building blocks
+(`auth.requestChallenge`, `auth.authenticate`, `createLensAccount`, `uploadAccountMetadata`, …) are in the
+main entry.
 
 ### Without Convex
 
@@ -342,13 +393,15 @@ Returns `auth` with `thirdwebClient`, `chain`, `lensClient`, `tokens`, `getSessi
 
 ### `<LensAuthProvider>` (`lens-convex-auth/react`)
 
+Renders no UI: add `<AccountDialog />`, or [your own](#your-own-account-dialog).
+
+
 | Prop | |
 | --- | --- |
 | `auth` | From `createLensAuth` |
 | `convex` | Your `ConvexReactClient` (optional) |
 | `onSignIn(account)` | Called after a sign-in from the dialog, once Convex accepts it |
 | `onAccountChange(previous, next)` | Called when the signed-in account changes: sign-in, switch, log out, or the session ending. See the recipe above |
-| `accountDialog` | Render the account dialog (default `true`) |
 | `wallets` | Wallets to reconnect after a reload while a Lens session is stored (default: thirdweb's). Pass the same list as `SignInButton`'s `connectButtonProps.wallets` if you customize it |
 
 ### `useLensAuth()`
@@ -361,7 +414,32 @@ when revoking failed (the session is cleared from the browser either way), so yo
 `status` is `"loading"` (first render and SSR), `"signed-out"`, `"choosing-account"` (wallet connected,
 no Lens account yet) or `"signed-in"`. `account` is `{ address, username }`.
 
-### `<SignInButton>`
+### `useAccountDialog()`
+
+`{ open, required, setOpen }`: whether to show the account dialog. It opens by itself when a wallet connects
+without a Lens session (and is `required` until one is signed in), and with `openAccountDialog()`.
+
+### `useAccountPicker()`
+
+`{ status, accounts, busy, signIn }`. `status` is `"no-wallet"`, `"loading"` or `"ready"`. Each account is
+`{ id, address, username, isOwner, sharesUsername, state }`; `sharesUsername` means another listed account
+has the same username, so show its address too. `state` is `"idle"`, `"signing-in"`, `"tap-again"` (call
+`signIn` again: on mobile it takes a second tap to open the wallet) or `"failed"`. Accounts without a
+username aren't listed. It only calls Lens while the dialog is open, and fetches the list again each time it
+opens, so it can live in a component that stays mounted.
+
+### `useCreateAccount()`
+
+`{ username, setUsername, usernameStatus, name, setName, bio, setBio, picture, pictureUrl, setPicture, step,
+busy, error, submit }`. `usernameStatus.status` is `"empty"`, `"pending"` (typed, waiting for typing to
+pause), `"checking"`, `"available"`, `"unknown"`, `"invalid"`, `"taken"` or `"rejected"`, the last three
+with a `message`. Switching wallets starts the form over. `step` is `"signing"`,
+`"tap-again"`, `"checking"`, `"uploading"`, `"creating"` or `"signing-in"`. Call `submit()` from the
+submit handler; a retry after a failure doesn't sign again or create a second account.
+
+### `<SignInButton>`, `<AccountDialog>`, `<AccountPicker>`, `<CreateAccountForm>` (`lens-convex-auth/react/ui`)
+
+The styled components, built on the hooks above. `<SignInButton>` takes:
 
 | Prop | Default | |
 | --- | --- | --- |
@@ -434,6 +512,19 @@ overrides:
 on both sides if you changed them.
 
 **The dialog is unstyled.** Tailwind isn't scanning the package: add the `@source` line from step 7.
+
+## Upgrading from 0.4
+
+- The provider no longer renders the account dialog, and its `accountDialog` prop is gone. Add
+  `<AccountDialog />` inside `<LensAuthProvider>`, or build your own from the hooks. In development, a
+  console warning says so when a wallet connects and nothing shows the dialog.
+- `SignInButton`, `AccountDialog`, `AccountPicker` and `CreateAccountForm` moved to
+  `lens-convex-auth/react/ui`, and their dependencies (Radix, vaul, lucide-react, …) are optional peer
+  dependencies now: install them to keep using the components (see [Install](#install)).
+- `useAccountDialog()` no longer returns `title` and `description`. `<AccountPicker>` gives them through
+  `onHeaderChange`.
+- `CreateAccountForm` no longer takes `ownerAddress` or `onCreated`: it uses the connected wallet, and
+  `onSignIn` on the provider runs after the account is created.
 
 ## License
 

@@ -5,7 +5,6 @@ import type { Account as ThirdwebAccount, Wallet } from "thirdweb/wallets"
 import { ConvexProviderWithAuth, useConvexAuth, type ConvexReactClient } from "convex/react"
 import type { LensAuth } from "../core/auth"
 import { TOKENS_CHANGED_EVENT } from "../core/tokens"
-import { AccountDialog } from "./AccountDialog"
 
 export type SignedInAccount = {
   /** Lens account address, lowercased */
@@ -19,7 +18,7 @@ export type LensAuthStatus =
   | "loading"
   /** No wallet and no Lens session */
   | "signed-out"
-  /** Wallet connected, no Lens account signed in yet: the account dialog is open */
+  /** Wallet connected, no Lens account signed in yet: the account dialog should be open (see useAccountDialog) */
   | "choosing-account"
   /** Signed in to a Lens account (Convex is authenticated as it too) */
   | "signed-in"
@@ -43,27 +42,24 @@ export type LensAuthContextValue = {
   openAccountDialog: () => void
 }
 
-export type AccountDialogHeader = {
-  /** "Select Account", or "Create Account" while the form to create one is shown */
-  title: string
-  description: string
-}
-
-export type AccountDialogControls = AccountDialogHeader & {
+// Whether the account dialog should show. The package doesn't draw one: render your own around
+// useAccountPicker() and useCreateAccount(), or <AccountDialog /> from lens-convex-auth/react/ui.
+export type AccountDialogControls = {
   open: boolean
   /** True while a wallet is connected without a Lens session: the dialog can't be dismissed */
   required: boolean
+  /** Closing does nothing while it's required */
   setOpen: (open: boolean) => void
 }
 
+// What the account hooks need besides the controls. Internal: not exported from the package.
 type AccountDialogState = AccountDialogControls & {
-  setHeader: (header: AccountDialogHeader) => void
   /** Call before authenticating as the account, so its username shows as soon as its session is stored */
   selectAccount: (account: SignedInAccount) => void
   completeSignIn: (account: SignedInAccount) => void
+  /** Counts a mounted user of the dialog's state, so the provider can tell when nothing shows the dialog */
+  register: () => () => void
 }
-
-const DEFAULT_HEADER: AccountDialogHeader = { title: "Select Account", description: "Select an account to continue." }
 
 const LensAuthContext = React.createContext<LensAuthContextValue | null>(null)
 const AccountDialogContext = React.createContext<AccountDialogState | null>(null)
@@ -76,14 +72,17 @@ export function useLensAuth(): LensAuthContextValue {
 
 export function useAccountDialogState(): AccountDialogState {
   const ctx = React.useContext(AccountDialogContext)
-  if (!ctx) throw new Error("<AccountDialog> must be used within <LensAuthProvider>")
+  if (!ctx) throw new Error("The account dialog's hooks must be used within <LensAuthProvider>")
+  const register = ctx.register
+  React.useEffect(() => register(), [register])
   return ctx
 }
 
-// The account dialog's state, to render <AccountPicker /> in your own dialog (with accountDialog={false})
+// Whether to show the account dialog, which picks or creates the Lens account to sign in with. It opens by
+// itself when a wallet connects without a Lens session, and with openAccountDialog() to switch accounts.
 export function useAccountDialog(): AccountDialogControls {
-  const { open, required, setOpen, title, description } = useAccountDialogState()
-  return { open, required, setOpen, title, description }
+  const { open, required, setOpen } = useAccountDialogState()
+  return { open, required, setOpen }
 }
 
 function subscribeToTokens(onChange: () => void) {
@@ -139,8 +138,6 @@ export type LensAuthProviderProps = {
    * session is restored on load. A good place to delete data your app keeps in the browser for `previous`.
    */
   onAccountChange?: (previous: SignedInAccount | null, next: SignedInAccount | null) => unknown
-  /** Render the account dialog. Set to false to render <AccountDialog /> yourself. Defaults to true. */
-  accountDialog?: boolean
   /**
    * Wallets to reconnect after a reload while a Lens session is stored. Pass the same list as
    * SignInButton's `connectButtonProps.wallets`, if you customize it. Defaults to thirdweb's wallets.
@@ -152,13 +149,13 @@ export type LensAuthProviderProps = {
 // thirdweb's AutoConnect (loaded on demand, like the ConnectButton) reconnects the last wallet
 const AutoConnect = React.lazy(() => import("thirdweb/react").then((m) => ({ default: m.AutoConnect })))
 
-// Wraps the app in thirdweb, Lens and (optionally) Convex providers wired to one session.
-export function LensAuthProvider({ auth, convex, onSignIn, onAccountChange, accountDialog = true, wallets, children }: LensAuthProviderProps) {
+// Wraps the app in thirdweb, Lens and (optionally) Convex providers wired to one session. It renders no UI:
+// add <AccountDialog /> from lens-convex-auth/react/ui inside it, or your own dialog (see useAccountDialog).
+export function LensAuthProvider({ auth, convex, onSignIn, onAccountChange, wallets, children }: LensAuthProviderProps) {
   const [useConvexAuthHook] = React.useState(() => createUseConvexAuth(auth))
   const content = (
     <LensAuthState auth={auth} onSignIn={onSignIn} onAccountChange={onAccountChange} withConvex={!!convex} wallets={wallets}>
       {children}
-      {accountDialog && <AccountDialog />}
     </LensAuthState>
   )
   return (
@@ -204,8 +201,15 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   const { disconnect } = useDisconnect()
   const sessionKey = useSessionKey(auth)
   const [manualOpen, setManualOpen] = React.useState(false)
-  const [header, setHeader] = React.useState(DEFAULT_HEADER)
   const [pendingSignIn, setPendingSignIn] = React.useState<SignedInAccount | null>(null)
+  // How many mounted components use the dialog's state (see useNoDialogWarning)
+  const dialogUsers = React.useRef(0)
+  const register = React.useCallback(() => {
+    dialogUsers.current++
+    return () => {
+      dialogUsers.current--
+    }
+  }, [])
   // The account being signed in to from the dialog. Its session is stored (and read back as sessionKey)
   // before completeSignIn saves it, so without this the account would show without its username.
   const [selected, setSelected] = React.useState<SignedInAccount | null>(null)
@@ -225,6 +229,7 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
 
   useBackgroundRefresh(auth)
   useAccountChange(status, account, onAccountChange)
+  useNoDialogWarning(status, dialogUsers)
 
   // A connected wallet checks the stored session is still valid (refreshing it or clearing it)
   React.useEffect(() => {
@@ -257,8 +262,7 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   const dialog = React.useMemo<AccountDialogState>(() => ({
     open: required || (manualOpen && !!wallet),
     required,
-    ...header,
-    setHeader,
+    register,
     selectAccount: setSelected,
     setOpen: (open) => {
       if (open) setManualOpen(true)
@@ -270,7 +274,7 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
       setManualOpen(false)
       if (onSignIn) setPendingSignIn(signedIn)
     },
-  }), [auth, required, manualOpen, wallet, header, onSignIn])
+  }), [auth, required, manualOpen, wallet, onSignIn, register])
 
   return (
     <LensAuthContext.Provider value={value}>
@@ -336,6 +340,32 @@ function useAccountChange(
       .catch((err) => console.error("lens-convex-auth: onAccountChange failed", err))
     // Only the address counts: the username arriving for the same account isn't a change
   }, [loading, address])
+}
+
+// The provider draws no dialog, so an app that renders none (say, after upgrading from 0.4, when the provider
+// drew one) leaves a connected wallet with no way to pick an account. Says so in development.
+function useNoDialogWarning(status: LensAuthStatus, dialogUsers: React.RefObject<number>) {
+  React.useEffect(() => {
+    if (status !== "choosing-account" || isProduction()) return
+    const timeout = setTimeout(() => {
+      if (dialogUsers.current > 0) return
+      console.warn(
+        "lens-convex-auth: a wallet connected without a Lens session, but nothing shows the account dialog to pick " +
+          "an account. Add <AccountDialog /> from lens-convex-auth/react/ui inside <LensAuthProvider>, or your own " +
+          "built on useAccountDialog().",
+      )
+    }, 1000)
+    return () => clearTimeout(timeout)
+  }, [status, dialogUsers])
+}
+
+// Written exactly as bundlers look for it, so they replace it; the try covers code that runs unbundled
+function isProduction() {
+  try {
+    return process.env.NODE_ENV === "production"
+  } catch {
+    return false
+  }
 }
 
 // Refreshes the tokens a minute before they expire, so Convex and API calls always have a fresh one

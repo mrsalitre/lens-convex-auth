@@ -12,9 +12,9 @@ export default defineConfig([
   {
     ...shared,
     // Built together so they share one copy of the core (the React components take the `auth` object
-    // created with the main entry). Browser-only code, so Next.js treats it as client code, which also
+    // created with the main entry), and the styled components share the hooks' state. Browser-only code, so Next.js treats it as client code, which also
     // lets Server Components render <LensAuthProvider> and <SignInButton>.
-    entry: { index: "src/core/index.ts", "react/index": "src/react/index.ts" },
+    entry: { index: "src/core/index.ts", "react/index": "src/react/index.ts", "react/ui/index": "src/react/ui/index.ts" },
     banner: { js: '"use client";' },
   },
   {
