@@ -50,9 +50,10 @@ describe("describeUsername", () => {
     expect(describeUsername("_alice", null, null)).toEqual({ status: "invalid", message: "Start with a letter or a number" })
   })
 
-  it("reads as checking until a check for this exact username is done", () => {
-    expect(describeUsername("alice", null, null)).toEqual({ status: "checking" })
-    expect(describeUsername("alice", { localName: "alic", status: "available" }, null)).toEqual({ status: "checking" })
+  it("is pending until a check for this exact username starts, then checking", () => {
+    expect(describeUsername("alice", null, null)).toEqual({ status: "pending" })
+    expect(describeUsername("alice", { localName: "alic", status: "available" }, null)).toEqual({ status: "pending" })
+    expect(describeUsername("alice", { localName: "alice", status: "checking" }, null)).toEqual({ status: "checking" })
   })
 
   it("passes on the result of the check", () => {
@@ -64,7 +65,7 @@ describe("describeUsername", () => {
   it("shows Lens's reason while the rejected username is still typed", () => {
     const rejected = { localName: "alice", message: "Not allowed" }
     expect(describeUsername("alice", { localName: "alice", status: "available" }, rejected)).toEqual({ status: "rejected", message: "Not allowed" })
-    expect(describeUsername("alice2", null, rejected).status).toBe("checking")
+    expect(describeUsername("alice2", null, rejected).status).toBe("pending")
   })
 
   it("asks for a username when submitted empty", () => {

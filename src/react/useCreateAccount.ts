@@ -23,7 +23,8 @@ import { useAccountDialogState, useLensAuth } from "./provider"
 export type CreateAccountStep = "signing" | "tap-again" | "checking" | "uploading" | "creating" | "signing-in"
 
 export type UsernameStatus =
-  | { status: "empty" | "checking" | "available" }
+  /** "pending": typed, waiting for typing to pause before it's checked; "checking": the check is running */
+  | { status: "empty" | "pending" | "checking" | "available" }
   /** The availability check failed: submitting checks again */
   | { status: "unknown" }
   /** "invalid": the format is wrong; "taken"; "rejected": Lens turned it down on submit */
@@ -73,6 +74,9 @@ export function useCreateAccount(): CreateAccountState {
   // Kept across attempts so a retry doesn't ask for another signature or create a second account
   const session = React.useRef<SessionClient | null>(null)
   const created = React.useRef<Created | null>(null)
+  // Counts wallet changes. A submit remembers the count it started with, and once the wallet has changed it
+  // stops touching state, so the previous wallet's flow can't show up in (or sign in) the next one's form.
+  const run = React.useRef(0)
 
   const [username, setUsernameValue] = React.useState("")
   const [debouncedUsername, setDebouncedUsername] = React.useState("")
@@ -87,13 +91,21 @@ export function useCreateAccount(): CreateAccountState {
   const [error, setError] = React.useState<string | null>(null)
   const [prefetched, setPrefetched] = React.useState<{ challenge: LensChallenge; fetchedAt: number } | null>(null)
 
-  // The onboarding session belongs to the wallet that signed it: another wallet starts over. Ending it
-  // when the form is left (or the wallet changes) before the account is signed in to.
+  // The onboarding session, and what was typed, belong to the wallet: another wallet starts over. Ending the
+  // session when the form is left (or the wallet changes) before the account is signed in to.
   React.useEffect(() => {
     return () => {
+      run.current++
       if (!created.current) void session.current?.logout()
       session.current = null
       created.current = null
+      setUsernameValue("")
+      setDebouncedUsername("")
+      setName("")
+      setBio("")
+      setPictureValue(null)
+      setAvailability(null)
+      setRejected(null)
       setStep(null)
       setError(null)
       setPrefetched(null)
@@ -147,17 +159,19 @@ export function useCreateAccount(): CreateAccountState {
   const usernameStatus = describeUsername(username, availability, rejected)
   const busy = step !== null && step.status !== "tap-again"
 
-  const fail = (e: unknown) => {
+  const fail = (current: () => boolean) => (e: unknown) => {
+    if (!current()) return
     setStep(null)
     if ((e as Error)?.name === "UnauthenticatedError") session.current = null
     setError(e instanceof OnboardingError ? e.message : "Couldn’t create your account. Please try again.")
   }
 
-  const create = async (onboarding: SessionClient) => {
+  const create = async (onboarding: SessionClient, current: () => boolean) => {
     const localName = username
     if (!created.current) {
       setStep({ status: "checking" })
       const reason = await checkUsername(auth, onboarding, localName)
+      if (!current()) return
       if (reason) {
         setRejected({ localName, message: reason })
         setStep(null)
@@ -165,28 +179,32 @@ export function useCreateAccount(): CreateAccountState {
       }
       setStep({ status: "uploading" })
       const metadataUri = await uploadAccountMetadata(auth, { name: name.trim(), bio: bio.trim(), picture })
+      if (!current()) return
       setStep({ status: "creating" })
       if (!wallet) throw new OnboardingError("Connect your wallet")
       const account = await createLensAccount(auth, onboarding, wallet, { localName, metadataUri })
+      if (!current()) return
       // account.username is its global Lens username, which it has none of in the app's namespace
       created.current = { address: account.address, localName }
     }
+    const { address } = created.current
     setStep({ status: "signing-in" })
-    const signedIn = { address: created.current.address.toLowerCase(), username: created.current.localName }
+    const signedIn = { address: address.toLowerCase(), username: created.current.localName }
     selectAccount(signedIn)
-    await signInToCreatedAccount(auth, onboarding, created.current.address)
+    await signInToCreatedAccount(auth, onboarding, address)
+    if (!current()) return
     setStep(null)
     completeSignIn(signedIn)
   }
 
-  const continueWith = (authenticating: Promise<SessionClient | null>) => {
+  const continueWith = (authenticating: Promise<SessionClient | null>, current: () => boolean) => {
     authenticating
       .then(async (onboarding) => {
-        if (!onboarding) return
+        if (!onboarding || !current()) return
         session.current = onboarding
-        await create(onboarding)
+        await create(onboarding, current)
       })
-      .catch(fail)
+      .catch(fail(current))
   }
 
   const readyChallenge = () => {
@@ -201,10 +219,12 @@ export function useCreateAccount(): CreateAccountState {
     if (usernameStatus.status === "invalid" || usernameStatus.status === "taken") return
     setError(null)
     setRejected(null)
+    const started = run.current
+    const current = () => run.current === started
 
     if (session.current) {
       setStep({ status: "checking" })
-      create(session.current).catch(fail)
+      create(session.current, current).catch(fail(current))
       return
     }
 
@@ -214,7 +234,7 @@ export function useCreateAccount(): CreateAccountState {
       const signing = signLensChallenge(challenge, activeAccount)
       setPrefetched(null)
       setStep({ status: "signing" })
-      continueWith(signing.then((signature) => authenticateOnboarding(client, challenge, signature)))
+      continueWith(signing.then((signature) => authenticateOnboarding(client, challenge, signature)), current)
       return
     }
 
@@ -223,13 +243,14 @@ export function useCreateAccount(): CreateAccountState {
     setStep({ status: "signing" })
     continueWith((async () => {
       const fetched = await requestOnboardingChallenge(auth, client, owner)
+      if (!current()) return null
       if (opensWalletWithDeepLink()) {
         setStep({ status: "tap-again", challenge: fetched })
         return null
       }
       const signature = await signLensChallenge(fetched, activeAccount)
       return authenticateOnboarding(client, fetched, signature)
-    })())
+    })(), current)
   }
 
   const setUsername = React.useCallback((value: string) => setUsernameValue(value.trim().toLowerCase()), [])
@@ -268,8 +289,8 @@ export function describeUsername(
   if (!username) return { status: "empty" }
   const formatError = usernameFormatError(username)
   if (formatError) return { status: "invalid", message: formatError }
-  // An older check doesn't count, so it reads as checking until this one's done
-  if (availability?.localName !== username) return { status: "checking" }
+  // No check for this exact username yet: it starts once typing pauses
+  if (availability?.localName !== username) return { status: "pending" }
   if (availability.status === "taken") return { status: "taken", message: "This username is taken" }
   return { status: availability.status }
 }

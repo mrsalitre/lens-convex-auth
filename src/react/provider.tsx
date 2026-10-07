@@ -57,6 +57,8 @@ type AccountDialogState = AccountDialogControls & {
   /** Call before authenticating as the account, so its username shows as soon as its session is stored */
   selectAccount: (account: SignedInAccount) => void
   completeSignIn: (account: SignedInAccount) => void
+  /** Counts a mounted user of the dialog's state, so the provider can tell when nothing shows the dialog */
+  register: () => () => void
 }
 
 const LensAuthContext = React.createContext<LensAuthContextValue | null>(null)
@@ -71,6 +73,8 @@ export function useLensAuth(): LensAuthContextValue {
 export function useAccountDialogState(): AccountDialogState {
   const ctx = React.useContext(AccountDialogContext)
   if (!ctx) throw new Error("The account dialog's hooks must be used within <LensAuthProvider>")
+  const register = ctx.register
+  React.useEffect(() => register(), [register])
   return ctx
 }
 
@@ -198,6 +202,14 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   const sessionKey = useSessionKey(auth)
   const [manualOpen, setManualOpen] = React.useState(false)
   const [pendingSignIn, setPendingSignIn] = React.useState<SignedInAccount | null>(null)
+  // How many mounted components use the dialog's state (see useNoDialogWarning)
+  const dialogUsers = React.useRef(0)
+  const register = React.useCallback(() => {
+    dialogUsers.current++
+    return () => {
+      dialogUsers.current--
+    }
+  }, [])
   // The account being signed in to from the dialog. Its session is stored (and read back as sessionKey)
   // before completeSignIn saves it, so without this the account would show without its username.
   const [selected, setSelected] = React.useState<SignedInAccount | null>(null)
@@ -217,6 +229,7 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
 
   useBackgroundRefresh(auth)
   useAccountChange(status, account, onAccountChange)
+  useNoDialogWarning(status, dialogUsers)
 
   // A connected wallet checks the stored session is still valid (refreshing it or clearing it)
   React.useEffect(() => {
@@ -249,6 +262,7 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   const dialog = React.useMemo<AccountDialogState>(() => ({
     open: required || (manualOpen && !!wallet),
     required,
+    register,
     selectAccount: setSelected,
     setOpen: (open) => {
       if (open) setManualOpen(true)
@@ -260,7 +274,7 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
       setManualOpen(false)
       if (onSignIn) setPendingSignIn(signedIn)
     },
-  }), [auth, required, manualOpen, wallet, onSignIn])
+  }), [auth, required, manualOpen, wallet, onSignIn, register])
 
   return (
     <LensAuthContext.Provider value={value}>
@@ -326,6 +340,32 @@ function useAccountChange(
       .catch((err) => console.error("lens-convex-auth: onAccountChange failed", err))
     // Only the address counts: the username arriving for the same account isn't a change
   }, [loading, address])
+}
+
+// The provider draws no dialog, so an app that renders none (say, after upgrading from 0.4, when the provider
+// drew one) leaves a connected wallet with no way to pick an account. Says so in development.
+function useNoDialogWarning(status: LensAuthStatus, dialogUsers: React.RefObject<number>) {
+  React.useEffect(() => {
+    if (status !== "choosing-account" || isProduction()) return
+    const timeout = setTimeout(() => {
+      if (dialogUsers.current > 0) return
+      console.warn(
+        "lens-convex-auth: a wallet connected without a Lens session, but nothing shows the account dialog to pick " +
+          "an account. Add <AccountDialog /> from lens-convex-auth/react/ui inside <LensAuthProvider>, or your own " +
+          "built on useAccountDialog().",
+      )
+    }, 1000)
+    return () => clearTimeout(timeout)
+  }, [status, dialogUsers])
+}
+
+// Written exactly as bundlers look for it, so they replace it; the try covers code that runs unbundled
+function isProduction() {
+  try {
+    return process.env.NODE_ENV === "production"
+  } catch {
+    return false
+  }
 }
 
 // Refreshes the tokens a minute before they expire, so Convex and API calls always have a fresh one

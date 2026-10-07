@@ -108,7 +108,7 @@ export function CreateAccountForm({ onBack, actions }: {
                             disabled={busy}
                         />
                         <InputGroupAddon align="inline-end">
-                            {usernameStatus.status === "checking" && username && <Loader2 className="animate-spin" />}
+                            {usernameStatus.status === "checking" && <Loader2 className="animate-spin" />}
                             {usernameStatus.status === "available" && <Check />}
                         </InputGroupAddon>
                     </InputGroup>

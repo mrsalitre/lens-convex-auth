@@ -41,11 +41,13 @@ type Step = { id: string; status: "loading" } | { id: string; status: "sign"; ch
 type PrefetchedChallenge = { owner: string; challenge: LensChallenge; fetchedAt: number }
 
 // The wallet's Lens accounts to sign in with, for an account list of your own. The connected wallet signs.
+// It only reaches Lens while the account dialog is open (see useAccountDialog), fetching the list again each
+// time it opens, so it can live in a component that stays mounted.
 export function useAccountPicker(): AccountPickerState {
   const { auth, wallet } = useLensAuth()
-  const { selectAccount, completeSignIn } = useAccountDialogState()
+  const { open, selectAccount, completeSignIn } = useAccountDialogState()
   const owner = wallet?.address ?? null
-  const available = useAvailableAccounts(auth, owner)
+  const available = useAvailableAccounts(auth, owner, open)
   const usernames = useAccountUsernames(auth, available)
 
   const [step, setStep] = React.useState<Step | null>(null)
@@ -77,8 +79,9 @@ export function useAccountPicker(): AccountPickerState {
   }, [fetchChallenge, owner])
 
   // Fetch each account's challenge ahead of time, so a tap can ask the wallet to sign right away:
-  // on mobile that tap is what lets the wallet app open (see opensWalletWithDeepLink).
+  // on mobile that tap is what lets the wallet app open (see opensWalletWithDeepLink). Only while it's open.
   React.useEffect(() => {
+    if (!open) return
     const refresh = () => {
       if (document.visibilityState !== "visible") return
       for (const account of listed) prefetch(account)
@@ -90,7 +93,7 @@ export function useAccountPicker(): AccountPickerState {
       clearInterval(interval)
       document.removeEventListener("visibilitychange", refresh)
     }
-  }, [listed, prefetch])
+  }, [open, listed, prefetch])
 
   const readyChallenge = (id: string) => {
     if (step?.id === id && step.status === "sign") return step.challenge
@@ -152,12 +155,13 @@ export function useAccountPicker(): AccountPickerState {
   }
 }
 
-// The accounts the wallet owns or manages, or undefined while they load (and without a wallet)
-function useAvailableAccounts(auth: LensAuth, owner: string | null) {
+// The accounts the wallet owns or manages, or undefined until they first load (and without a wallet). Fetched
+// again each time the dialog opens, so accounts created since show up; the last list stays until then.
+function useAvailableAccounts(auth: LensAuth, owner: string | null, open: boolean) {
   const [loaded, setLoaded] = React.useState<{ owner: string; items: readonly AccountAvailable[] } | null>(null)
 
   React.useEffect(() => {
-    if (!owner) return
+    if (!owner || !open) return
     let cancelled = false
     fetchAccountsAvailable(auth.lensClient, { managedBy: evmAddress(owner), includeOwned: true }).then((result) => {
       // A failed lookup lists no accounts, which offers to create one
@@ -166,7 +170,7 @@ function useAvailableAccounts(auth: LensAuth, owner: string | null) {
     return () => {
       cancelled = true
     }
-  }, [auth, owner])
+  }, [auth, owner, open])
 
   return loaded && loaded.owner === owner ? loaded.items : undefined
 }

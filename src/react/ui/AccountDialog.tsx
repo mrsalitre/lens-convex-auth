@@ -78,14 +78,18 @@ export function AccountPicker({ actions, onHeaderChange }: {
   actions?: React.ReactNode
   onHeaderChange?: (header: AccountPickerHeader) => void
 }) {
+  const { wallet } = useLensAuth()
   const { open } = useAccountDialog()
   const picker = useAccountPicker()
   const [creating, setCreating] = React.useState(false)
 
-  // Show the account list again the next time the dialog opens
+  // Show the account list again the next time the dialog opens, and for another wallet
   React.useEffect(() => {
     if (!open) setCreating(false)
   }, [open])
+  React.useEffect(() => {
+    setCreating(false)
+  }, [wallet?.address])
 
   const loading = picker.status !== "ready"
   const hasAccounts = !loading && picker.accounts.length > 0

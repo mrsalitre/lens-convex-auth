@@ -425,13 +425,15 @@ without a Lens session (and is `required` until one is signed in), and with `ope
 `{ id, address, username, isOwner, sharesUsername, state }`; `sharesUsername` means another listed account
 has the same username, so show its address too. `state` is `"idle"`, `"signing-in"`, `"tap-again"` (call
 `signIn` again: on mobile it takes a second tap to open the wallet) or `"failed"`. Accounts without a
-username aren't listed.
+username aren't listed. It only calls Lens while the dialog is open, and fetches the list again each time it
+opens, so it can live in a component that stays mounted.
 
 ### `useCreateAccount()`
 
 `{ username, setUsername, usernameStatus, name, setName, bio, setBio, picture, pictureUrl, setPicture, step,
-busy, error, submit }`. `usernameStatus.status` is `"empty"`, `"checking"`, `"available"`, `"unknown"`,
-`"invalid"`, `"taken"` or `"rejected"`, the last three with a `message`. `step` is `"signing"`,
+busy, error, submit }`. `usernameStatus.status` is `"empty"`, `"pending"` (typed, waiting for typing to
+pause), `"checking"`, `"available"`, `"unknown"`, `"invalid"`, `"taken"` or `"rejected"`, the last three
+with a `message`. Switching wallets starts the form over. `step` is `"signing"`,
 `"tap-again"`, `"checking"`, `"uploading"`, `"creating"` or `"signing-in"`. Call `submit()` from the
 submit handler; a retry after a failure doesn't sign again or create a second account.
 
@@ -514,7 +516,8 @@ on both sides if you changed them.
 ## Upgrading from 0.4
 
 - The provider no longer renders the account dialog, and its `accountDialog` prop is gone. Add
-  `<AccountDialog />` inside `<LensAuthProvider>`, or build your own from the hooks.
+  `<AccountDialog />` inside `<LensAuthProvider>`, or build your own from the hooks. In development, a
+  console warning says so when a wallet connects and nothing shows the dialog.
 - `SignInButton`, `AccountDialog`, `AccountPicker` and `CreateAccountForm` moved to
   `lens-convex-auth/react/ui`, and their dependencies (Radix, vaul, lucide-react, …) are optional peer
   dependencies now: install them to keep using the components (see [Install](#install)).
