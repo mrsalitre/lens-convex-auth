@@ -5,7 +5,6 @@ import type { Account as ThirdwebAccount, Wallet } from "thirdweb/wallets"
 import { ConvexProviderWithAuth, useConvexAuth, type ConvexReactClient } from "convex/react"
 import type { LensAuth } from "../core/auth"
 import { TOKENS_CHANGED_EVENT } from "../core/tokens"
-import { AccountDialog } from "./AccountDialog"
 
 export type SignedInAccount = {
   /** Lens account address, lowercased */
@@ -19,7 +18,7 @@ export type LensAuthStatus =
   | "loading"
   /** No wallet and no Lens session */
   | "signed-out"
-  /** Wallet connected, no Lens account signed in yet: the account dialog is open */
+  /** Wallet connected, no Lens account signed in yet: the account dialog should be open (see useAccountDialog) */
   | "choosing-account"
   /** Signed in to a Lens account (Convex is authenticated as it too) */
   | "signed-in"
@@ -43,27 +42,22 @@ export type LensAuthContextValue = {
   openAccountDialog: () => void
 }
 
-export type AccountDialogHeader = {
-  /** "Select Account", or "Create Account" while the form to create one is shown */
-  title: string
-  description: string
-}
-
-export type AccountDialogControls = AccountDialogHeader & {
+// Whether the account dialog should show. The package doesn't draw one: render your own around
+// useAccountPicker() and useCreateAccount(), or <AccountDialog /> from lens-convex-auth/react/ui.
+export type AccountDialogControls = {
   open: boolean
   /** True while a wallet is connected without a Lens session: the dialog can't be dismissed */
   required: boolean
+  /** Closing does nothing while it's required */
   setOpen: (open: boolean) => void
 }
 
+// What the account hooks need besides the controls. Internal: not exported from the package.
 type AccountDialogState = AccountDialogControls & {
-  setHeader: (header: AccountDialogHeader) => void
   /** Call before authenticating as the account, so its username shows as soon as its session is stored */
   selectAccount: (account: SignedInAccount) => void
   completeSignIn: (account: SignedInAccount) => void
 }
-
-const DEFAULT_HEADER: AccountDialogHeader = { title: "Select Account", description: "Select an account to continue." }
 
 const LensAuthContext = React.createContext<LensAuthContextValue | null>(null)
 const AccountDialogContext = React.createContext<AccountDialogState | null>(null)
@@ -76,14 +70,15 @@ export function useLensAuth(): LensAuthContextValue {
 
 export function useAccountDialogState(): AccountDialogState {
   const ctx = React.useContext(AccountDialogContext)
-  if (!ctx) throw new Error("<AccountDialog> must be used within <LensAuthProvider>")
+  if (!ctx) throw new Error("The account dialog's hooks must be used within <LensAuthProvider>")
   return ctx
 }
 
-// The account dialog's state, to render <AccountPicker /> in your own dialog (with accountDialog={false})
+// Whether to show the account dialog, which picks or creates the Lens account to sign in with. It opens by
+// itself when a wallet connects without a Lens session, and with openAccountDialog() to switch accounts.
 export function useAccountDialog(): AccountDialogControls {
-  const { open, required, setOpen, title, description } = useAccountDialogState()
-  return { open, required, setOpen, title, description }
+  const { open, required, setOpen } = useAccountDialogState()
+  return { open, required, setOpen }
 }
 
 function subscribeToTokens(onChange: () => void) {
@@ -139,8 +134,6 @@ export type LensAuthProviderProps = {
    * session is restored on load. A good place to delete data your app keeps in the browser for `previous`.
    */
   onAccountChange?: (previous: SignedInAccount | null, next: SignedInAccount | null) => unknown
-  /** Render the account dialog. Set to false to render <AccountDialog /> yourself. Defaults to true. */
-  accountDialog?: boolean
   /**
    * Wallets to reconnect after a reload while a Lens session is stored. Pass the same list as
    * SignInButton's `connectButtonProps.wallets`, if you customize it. Defaults to thirdweb's wallets.
@@ -152,13 +145,13 @@ export type LensAuthProviderProps = {
 // thirdweb's AutoConnect (loaded on demand, like the ConnectButton) reconnects the last wallet
 const AutoConnect = React.lazy(() => import("thirdweb/react").then((m) => ({ default: m.AutoConnect })))
 
-// Wraps the app in thirdweb, Lens and (optionally) Convex providers wired to one session.
-export function LensAuthProvider({ auth, convex, onSignIn, onAccountChange, accountDialog = true, wallets, children }: LensAuthProviderProps) {
+// Wraps the app in thirdweb, Lens and (optionally) Convex providers wired to one session. It renders no UI:
+// add <AccountDialog /> from lens-convex-auth/react/ui inside it, or your own dialog (see useAccountDialog).
+export function LensAuthProvider({ auth, convex, onSignIn, onAccountChange, wallets, children }: LensAuthProviderProps) {
   const [useConvexAuthHook] = React.useState(() => createUseConvexAuth(auth))
   const content = (
     <LensAuthState auth={auth} onSignIn={onSignIn} onAccountChange={onAccountChange} withConvex={!!convex} wallets={wallets}>
       {children}
-      {accountDialog && <AccountDialog />}
     </LensAuthState>
   )
   return (
@@ -204,7 +197,6 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   const { disconnect } = useDisconnect()
   const sessionKey = useSessionKey(auth)
   const [manualOpen, setManualOpen] = React.useState(false)
-  const [header, setHeader] = React.useState(DEFAULT_HEADER)
   const [pendingSignIn, setPendingSignIn] = React.useState<SignedInAccount | null>(null)
   // The account being signed in to from the dialog. Its session is stored (and read back as sessionKey)
   // before completeSignIn saves it, so without this the account would show without its username.
@@ -257,8 +249,6 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   const dialog = React.useMemo<AccountDialogState>(() => ({
     open: required || (manualOpen && !!wallet),
     required,
-    ...header,
-    setHeader,
     selectAccount: setSelected,
     setOpen: (open) => {
       if (open) setManualOpen(true)
@@ -270,7 +260,7 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
       setManualOpen(false)
       if (onSignIn) setPendingSignIn(signedIn)
     },
-  }), [auth, required, manualOpen, wallet, header, onSignIn])
+  }), [auth, required, manualOpen, wallet, onSignIn])
 
   return (
     <LensAuthContext.Provider value={value}>
