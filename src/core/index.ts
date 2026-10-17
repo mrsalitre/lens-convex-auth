@@ -25,7 +25,7 @@ export {
   usernameFormatError,
   type AccountProfile,
 } from "./onboarding"
-export { TokenService, TOKENS_CHANGED_EVENT, type TokenData, type LensCredentials } from "./tokens"
+export { TokenService, TOKENS_CHANGED_EVENT, type TokenData, type LensCredentials, type ExternalCredentials } from "./tokens"
 export { LensTokenStorage } from "./storage"
 export { decodeJwtPayload, lensSessionFromIdToken } from "./jwt"
 export { createLensWalletClient, lensThirdwebChain, lensViemChain } from "./wallet"

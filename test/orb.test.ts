@@ -15,6 +15,7 @@ const host = vi.hoisted(() => ({
     emit: (context: unknown) => void
   }>,
   connect: (async () => ({})) as (options: unknown) => Promise<unknown>,
+  performTransaction: (async () => ({})) as (tx: unknown) => Promise<unknown>,
 }))
 
 vi.mock("@orbclub/apps-sdk/client", async (importOriginal) => {
@@ -30,6 +31,9 @@ vi.mock("@orbclub/apps-sdk/client", async (importOriginal) => {
     }
     connect(options: unknown) {
       return host.connect(options)
+    }
+    performTransaction(tx: unknown) {
+      return host.performTransaction(tx)
     }
     onContextChange(callback: (context: unknown) => void) {
       this.listeners.add(callback)
@@ -269,5 +273,126 @@ describe("createOrbAuth", () => {
     await vi.waitFor(() => expect(orb.getState().status).toBe("signed-in"))
     expect(host.connect).toHaveBeenCalledOnce()
     expect(host.clients).toHaveLength(1)
+  })
+})
+
+describe("with the Lens client (the `lens` option)", () => {
+  const lensAuth = () => ({ setExternalSession: vi.fn(async (_credentials: unknown) => {}) })
+
+  it("gives it the session, each renewal, and takes it back when the session ends", async () => {
+    vi.useFakeTimers()
+    const first = tokensFor(ALICE, 120)
+    host.connect = vi.fn(async () => first)
+    const lens = lensAuth()
+    const orb = createOrbAuth({ lens: lens as never })
+    orb.start()
+    await vi.advanceTimersByTimeAsync(0)
+    // Only the ID and access tokens
+    expect(lens.setExternalSession).toHaveBeenLastCalledWith({ accessToken: first.accessToken, idToken: first.idToken })
+
+    const renewed = tokensFor(ALICE, 600)
+    host.connect = vi.fn(async () => renewed)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(lens.setExternalSession).toHaveBeenLastCalledWith({ accessToken: renewed.accessToken, idToken: renewed.idToken })
+
+    await orb.signOut()
+    expect(lens.setExternalSession).toHaveBeenLastCalledWith(null)
+  })
+
+  it("takes it back when Orb switches profiles", async () => {
+    const lens = lensAuth()
+    const orb = createOrbAuth({ lens: lens as never })
+    orb.start()
+    await vi.waitFor(() => expect(orb.getState().status).toBe("signed-in"))
+    host.connect = vi.fn(async () => {
+      throw new OrbConnectDeclinedError()
+    })
+    client().emit(contextFor(BOB))
+    expect(lens.setExternalSession).toHaveBeenLastCalledWith(null)
+  })
+})
+
+describe("handleOperation", () => {
+  const DEVICE = "0xdddddddddddddddddddddddddddddddddddddddd"
+  const HASH = `0x${"ab".repeat(32)}`
+  const sponsored = (overrides: Record<string, unknown> = {}) => ({
+    __typename: "SponsoredTransactionRequest",
+    reason: "",
+    sponsoredReason: null,
+    raw: {
+      __typename: "Eip712TransactionRequest",
+      type: 113,
+      from: DEVICE,
+      to: "0x1111111111111111111111111111111111111111",
+      nonce: 7,
+      gasLimit: 500000,
+      maxFeePerGas: "100",
+      maxPriorityFeePerGas: "1",
+      data: "0xabcdef",
+      value: "0",
+      chainId: 232,
+      customData: {
+        gasPerPubdata: "50000",
+        factoryDeps: [],
+        customSignature: null,
+        paymasterParams: { paymaster: "0x2222222222222222222222222222222222222222", paymasterInput: "0x1234" },
+      },
+      ...overrides,
+    },
+  })
+
+  async function startedOrb() {
+    host.context = { ...contextFor(ALICE), user: { ...contextFor(ALICE).user, deviceWalletAddress: DEVICE } }
+    const orb = createOrbAuth()
+    orb.start()
+    return orb
+  }
+
+  it("passes on what Lens already did (signless)", async () => {
+    const orb = await startedOrb()
+    const result = await orb.handleOperation({ __typename: "PostResponse", hash: HASH } as never)
+    expect(result.isOk() && result.value).toBe(HASH)
+  })
+
+  it("sends a transaction to sign through Orb's approval sheet, paymaster included", async () => {
+    host.performTransaction = vi.fn(async () => ({ status: "completed", transactionHash: HASH }))
+    const orb = await startedOrb()
+    const result = await orb.handleOperation(sponsored() as never)
+    expect(result.isOk() && result.value).toBe(HASH)
+    expect(host.performTransaction).toHaveBeenCalledWith({
+      to: "0x1111111111111111111111111111111111111111",
+      chainId: 232,
+      data: "0xabcdef",
+      amount: "0",
+      maxGas: 500000,
+      maxFeePerGas: "100",
+      maxPriorityFeePerGas: "1",
+      nonce: 7,
+      gasPerPubdata: "50000",
+      paymaster: "0x2222222222222222222222222222222222222222",
+      paymasterInput: "0x1234",
+      customSignature: undefined,
+    })
+  })
+
+  it("refuses transactions with a native amount, or for another wallet, without asking Orb", async () => {
+    host.performTransaction = vi.fn(async () => ({ status: "completed", transactionHash: HASH }))
+    const orb = await startedOrb()
+    const withValue = await orb.handleOperation(sponsored({ value: "1" }) as never)
+    expect(withValue.isErr() && withValue.error.message).toMatch(/native amount/)
+    const otherWallet = await orb.handleOperation(sponsored({ from: "0x3333333333333333333333333333333333333333" }) as never)
+    expect(otherWallet.isErr() && otherWallet.error.message).toMatch(/another wallet/)
+    expect(host.performTransaction).not.toHaveBeenCalled()
+  })
+
+  it("fails with Lens's reason when the operation was refused, and when the viewer declines in Orb", async () => {
+    host.performTransaction = vi.fn(async () => {
+      throw new Error("declined")
+    })
+    const orb = await startedOrb()
+    const refused = await orb.handleOperation({ __typename: "TransactionWillFail", reason: "Not enough funds" } as never)
+    expect(refused.isErr() && refused.error.name).toBe("ValidationError")
+    const declined = await orb.handleOperation(sponsored() as never)
+    expect(declined.isErr() && declined.error.name).toBe("SigningError")
   })
 })

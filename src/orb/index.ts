@@ -1,4 +1,17 @@
 import {
+  SigningError,
+  ValidationError,
+  errAsync,
+  isTransactionRequest,
+  okAsync,
+  ResultAsync,
+  txHash,
+  type OperationHandler,
+  type SelfFundedTransactionRequest,
+  type SponsoredTransactionRequest,
+  type TxHash,
+} from "@lens-protocol/client"
+import {
   OrbAppsClient,
   OrbConnectDeclinedError,
   OrbConnectTimeoutError,
@@ -7,6 +20,7 @@ import {
   type OrbAppContext,
   type OrbAuthTokens,
 } from "@orbclub/apps-sdk/client"
+import type { LensAuth } from "../core/auth"
 import { DEFAULT_ORB_CONVEX_TOKEN_ENDPOINT } from "../core/constants"
 import { jwtExpiresAt } from "../core/jwt"
 import type { OrbAuthSource, OrbSessionState } from "./types"
@@ -22,6 +36,12 @@ export type OrbAuthOptions = {
    * signs the viewer out, even if they let your app stay signed in before. Defaults to true.
    */
   stayLoggedIn?: boolean
+  /**
+   * From createLensAuth(). The Orb session then becomes its Lens client's session while the viewer is signed in,
+   * so Lens SDK calls and hooks act as their Orb profile, and `handleOperation` sends what needs signing to Orb.
+   * Without it the Lens client stays public inside Orb.
+   */
+  lens?: LensAuth
   /** Sets `data-orb-theme` and `color-scheme` on <html> from Orb's theme. Defaults to true. */
   applyTheme?: boolean
   /** Writes Orb's safe-area insets to `--orb-safe-top` (and bottom, left, right) on <html>. Defaults to true. */
@@ -135,9 +155,17 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     expiryTimer = renewTimer = undefined
   }
 
+  // Gives the Lens client the current Orb session, or takes it back (see the `lens` option)
+  function syncLens() {
+    options.lens
+      ?.setExternalSession(tokens && { accessToken: tokens.accessToken, idToken: tokens.idToken })
+      .catch((err) => console.warn("lens-convex-auth: couldn't give the Lens client the Orb session", err))
+  }
+
   function endSession(error: string | null) {
     clearTimers()
     tokens = null
+    syncLens()
     boundToProfile = false
     update({ status: "signed-out", account: null, error })
   }
@@ -153,6 +181,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     const renewal = !!tokens && accountOf(tokens.accessToken) === address
     clearTimers()
     tokens = next
+    syncLens()
     boundToProfile = !!selectedProfile()
     update({
       status: "signed-in",
@@ -325,6 +354,45 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     return fetch(input, { ...init, headers })
   }
 
+  // Sends a transaction the Lens API prepared through Orb's approval sheet, signed by Orb's wallet for the
+  // profile (the account manager Orb's sessions act through)
+  async function sendThroughOrb(raw: (SponsoredTransactionRequest | SelfFundedTransactionRequest)["raw"]): Promise<TxHash> {
+    if (!client) throw new OrbNotAvailableError()
+    // Orb doesn't document the unit of its `amount` yet, and a wrong one would misprice a payment. Lens account
+    // actions pay from the account itself, with no native value on the transaction.
+    if (BigInt(raw.value) !== 0n) throw new Error("Orb can't send transactions with a native amount yet.")
+    const device = client.context?.user.deviceWalletAddress
+    if (device && device.toLowerCase() !== raw.from.toLowerCase()) {
+      throw new Error("This transaction has to be signed by another wallet than Orb's.")
+    }
+    const custom = "customData" in raw ? raw.customData : null
+    const { transactionHash } = await client.performTransaction({
+      to: raw.to,
+      chainId: raw.chainId,
+      data: raw.data,
+      amount: "0",
+      maxGas: raw.gasLimit,
+      maxFeePerGas: raw.maxFeePerGas,
+      maxPriorityFeePerGas: raw.maxPriorityFeePerGas,
+      nonce: raw.nonce,
+      gasPerPubdata: custom?.gasPerPubdata,
+      paymaster: custom?.paymasterParams?.paymaster,
+      paymasterInput: custom?.paymasterParams?.paymasterInput,
+      customSignature: custom?.customSignature ?? undefined,
+    })
+    if (!transactionHash) throw new Error("Orb didn't return the transaction's hash.")
+    return txHash(transactionHash)
+  }
+
+  // Inside Orb, what `handleOperationWith(walletClient)` from @lens-protocol/client/viem does with a wallet:
+  // `.andThen(orb.handleOperation)`. What Lens already did (signless) passes its hash on; a transaction to sign
+  // opens Orb's approval sheet. Its result only says Orb sent it: wait for it as usual (`waitForTransaction`).
+  const handleOperation = ((result) => {
+    if ("hash" in result) return okAsync(result.hash)
+    if (!isTransactionRequest(result)) return errAsync(ValidationError.fromErrorResponse(result))
+    return ResultAsync.fromPromise(sendThroughOrb(result.raw), (err) => SigningError.from(err))
+  }) as OperationHandler
+
   const orbAuth = {
     isInsideOrb: insideOrb,
     /**
@@ -350,6 +418,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     signOut,
     fetchConvexToken,
     fetch: authFetch,
+    handleOperation,
   }
   return orbAuth satisfies OrbAuthSource
 }

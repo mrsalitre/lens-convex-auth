@@ -107,3 +107,60 @@ describe("logout", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
+
+describe("an external session (Orb)", () => {
+  const orbSession = () => {
+    const { accessToken, idToken } = session("orb")
+    return { accessToken, idToken }
+  }
+
+  it("becomes the Lens client's session without storing anything, and leaves the stored one alone", async () => {
+    const auth = createAuth()
+    auth.tokens.storeCredentials(session("wallet"))
+    const external = orbSession()
+
+    await auth.setExternalSession(external)
+    expect(auth.lensClient.currentSession.isSessionClient()).toBe(true)
+    const credentials = auth.lensClient.currentSession.isSessionClient() && auth.lensClient.currentSession.getCredentials()
+    expect(credentials && credentials.isOk() && credentials.value).toEqual({ ...external, refreshToken: "" })
+    expect(await auth.resumeSession()).toBe(true)
+    // The wallet session is still the stored one, and nothing of the external one was written
+    expect(auth.getSession()?.sessionId).toBe("sid-wallet")
+    expect([...Object.values(auth.tokens.storageKeys)].map((k) => localStorage.getItem(k))).not.toContain(external.accessToken)
+  })
+
+  it("replaces the Lens client's copy when renewed", async () => {
+    const auth = createAuth()
+    await auth.setExternalSession(orbSession())
+    const renewed = { ...orbSession(), accessToken: jwt({ exp: inMinutes(20), n: "renewed" }) }
+    await auth.setExternalSession(renewed)
+    const current = auth.lensClient.currentSession
+    expect(current.isSessionClient() && current.getCredentials().unwrapOr(null)?.accessToken).toBe(renewed.accessToken)
+  })
+
+  it("ends with null: the Lens client goes public, and the stored wallet session isn't touched", async () => {
+    const auth = createAuth()
+    auth.tokens.storeCredentials(session("wallet"))
+    await auth.setExternalSession(orbSession())
+    await auth.setExternalSession(null)
+    expect(auth.lensClient.currentSession.isSessionClient()).toBe(false)
+    expect(auth.getSession()?.sessionId).toBe("sid-wallet")
+  })
+
+  it("isn't refreshed, revoked or cleared through the Lens SDK's storage", async () => {
+    const auth = createAuth()
+    auth.tokens.storeCredentials(session("wallet"))
+    const { LensTokenStorage } = await import("../src/core/storage")
+    const storage = new LensTokenStorage(auth.tokens, "test_custom_")
+    await auth.setExternalSession(orbSession())
+    storage.setItem("lens.mainnet.credentials", JSON.stringify({ data: session("refreshed"), metadata: { version: 3, createdAt: 1, updatedAt: 1 } }))
+    storage.removeItem("lens.mainnet.credentials")
+    expect(auth.tokens.getStoredTokens()?.idToken).toBe(session("wallet").idToken)
+    expect(auth.tokens.getExternalSession()).toEqual(orbSession())
+  })
+
+  it("isn't counted without one: resumeSession stays false with nothing stored", async () => {
+    const auth = createAuth()
+    expect(await auth.resumeSession()).toBe(false)
+  })
+})
