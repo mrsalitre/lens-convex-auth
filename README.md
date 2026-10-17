@@ -587,7 +587,7 @@ Need `@orbclub/apps-sdk`. `createOrbAuth(options?)`:
 | Option | Default | |
 | --- | --- | --- |
 | `convexTokenEndpoint` | `"/api/convex-token/orb"` | Where the Orb token route lives |
-| `stayLoggedIn` | `true` | Ask the viewer to stay signed in, so Orb renews the session. With `false`, it ends after about ten minutes |
+| `stayLoggedIn` | `true` | Ask the viewer to stay signed in, so Orb renews the session. With `false`, it ends after about ten minutes, and a reload signs the viewer out |
 | `applyTheme` | `true` | Set `data-orb-theme` and `color-scheme` on `<html>` from Orb's theme |
 | `applySafeAreaInsets` | `true` | Write Orb's insets to `--orb-safe-top` (and `-bottom`, `-left`, `-right`) on `<html>`. Inside Orb, `env(safe-area-inset-*)` is zero |
 

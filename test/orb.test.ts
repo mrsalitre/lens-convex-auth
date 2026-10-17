@@ -141,12 +141,20 @@ describe("createOrbAuth", () => {
     expect(orb.getState()).toMatchObject({ status: "signed-in", account: { address: ALICE } })
   })
 
-  it("asks for a temporary session with stayLoggedIn: false", async () => {
-    host.context = contextFor(ALICE, { grantRenewal: false })
+  it("with stayLoggedIn: false, asks for a temporary session and never renews or restores it silently", async () => {
+    vi.useFakeTimers()
+    // Orb could renew, and the profile may have approved staying signed in before
+    host.connect = vi.fn(async () => tokensFor(ALICE, 120))
     const orb = createOrbAuth({ stayLoggedIn: false })
     orb.start()
+    expect(orb.getState().status).toBe("signed-out")
+    expect(host.connect).not.toHaveBeenCalled()
+
     await orb.signIn()
-    expect(host.connect).toHaveBeenCalledWith({ credentials: "id_access" })
+    expect(host.connect).toHaveBeenCalledExactlyOnceWith({ credentials: "id_access" })
+    await vi.advanceTimersByTimeAsync(121_000)
+    expect(host.connect).toHaveBeenCalledOnce()
+    expect(orb.getState()).toMatchObject({ status: "signed-out", error: expect.stringMatching(/expired/) })
   })
 
   it("says why a sign-in failed", async () => {
@@ -234,6 +242,23 @@ describe("createOrbAuth", () => {
     client().emit(contextFor(ALICE))
     expect(host.connect).toHaveBeenCalledOnce()
     expect(orb.getState().status).toBe("signed-out")
+  })
+
+  it("drops a silent sign-in that finishes after it was stopped, and tries again on the next start", async () => {
+    let answer!: (tokens: unknown) => void
+    host.connect = vi.fn(() => new Promise((resolve) => (answer = resolve)))
+    const orb = createOrbAuth()
+    const stop = orb.start()
+    stop()
+    answer(tokensFor(ALICE))
+    await vi.waitFor(() => expect(host.connect).toHaveBeenCalledOnce())
+    await Promise.resolve()
+    expect(orb.getState().status).not.toBe("signed-in")
+    expect(await orb.fetchConvexToken()).toBeNull()
+
+    host.connect = vi.fn(async () => tokensFor(ALICE))
+    orb.start()
+    await vi.waitFor(() => expect(orb.getState().status).toBe("signed-in"))
   })
 
   it("survives being started twice (React Strict Mode) with one silent sign-in", async () => {

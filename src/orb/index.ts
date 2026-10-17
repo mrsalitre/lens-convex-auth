@@ -18,7 +18,8 @@ export type OrbAuthOptions = {
   convexTokenEndpoint?: string
   /**
    * Asks the viewer to stay signed in, so Orb renews the session in the background and signs them back in
-   * after a reload. With false, the session ends with its access token (about ten minutes). Defaults to true.
+   * after a reload. With false, the session ends with its access token (about ten minutes), and a reload
+   * signs the viewer out, even if they let your app stay signed in before. Defaults to true.
    */
   stayLoggedIn?: boolean
   /** Sets `data-orb-theme` and `color-scheme` on <html> from Orb's theme. Defaults to true. */
@@ -65,7 +66,8 @@ function describeError(err: unknown): string {
 // Orb profiles on a phone share the page's storage, so a session only lasts while Orb shows its profile.
 export function createOrbAuth(options: OrbAuthOptions = {}) {
   const convexTokenEndpoint = options.convexTokenEndpoint ?? DEFAULT_ORB_CONVEX_TOKEN_ENDPOINT
-  const credentials = options.stayLoggedIn === false ? "id_access" : "id_access_refresh"
+  const stayLoggedIn = options.stayLoggedIn !== false
+  const credentials = stayLoggedIn ? "id_access_refresh" : "id_access"
 
   const listeners = new Set<() => void>()
   let client: OrbAppsClient | null = null
@@ -78,6 +80,9 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
   // The profile a silent sign-in was last tried for, so it's tried once per profile (not on every context
   // update, and not right after the viewer signed out)
   let restoredFor: string | null | undefined
+  // How many start() calls haven't been stopped. React can stop and start again right away (Strict Mode,
+  // Fast Refresh), so a silent sign-in still in flight is kept unless none are left when it finishes.
+  let activeStarts = 0
   let renewing: Promise<void> | null = null
   let expiryTimer: ReturnType<typeof setTimeout> | undefined
   let renewTimer: ReturnType<typeof setTimeout> | undefined
@@ -117,6 +122,13 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     return user.handle.replace(/^@/, "")
   }
 
+  // Whether Orb may renew the session and sign the viewer back in without showing anything: the app asks to
+  // stay signed in, and this Orb version supports it (older ones ignore `prompt: "none"` and would show the
+  // approval sheet)
+  function canConnectSilently() {
+    return stayLoggedIn && client?.context?.features.grantRenewal === true
+  }
+
   function clearTimers() {
     clearTimeout(expiryTimer)
     clearTimeout(renewTimer)
@@ -152,7 +164,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     // The page never holds a refresh token: the session lasts as long as the access token, unless Orb
     // renews it first
     expiryTimer = setTimeout(() => endSession("Your Orb session expired. Sign in again."), expiresAt - Date.now())
-    if (client?.context?.features.grantRenewal === true) {
+    if (canConnectSilently()) {
       renewTimer = setTimeout(() => void renew(), Math.max(0, expiresAt - Date.now() - RENEW_BEFORE_EXPIRY_MS))
     }
   }
@@ -160,8 +172,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
   // Signs the selected profile back in without showing anything, when it already approved this app and
   // asked to stay signed in. Null when Orb can't (it declined, or doesn't support it).
   async function connectSilently(): Promise<Tokens | null> {
-    // Older Orb versions ignore `prompt: "none"` and would show the approval sheet
-    if (!client || client.context?.features.grantRenewal !== true) return null
+    if (!client || !canConnectSilently()) return null
     try {
       const result = await client.connect({ credentials: "id_access_refresh", prompt: "none", timeout: SILENT_CONNECT_TIMEOUT_MS })
       // Orb answers for the profile selected when it handled the request: keep it only if that's still the one
@@ -177,7 +188,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     const profile = selectedProfile()
     if (restoredFor === profile) return
     restoredFor = profile
-    if (client.context?.features.grantRenewal !== true) {
+    if (!canConnectSilently()) {
       if (state.status === "loading") update({ status: "signed-out" })
       return
     }
@@ -185,6 +196,11 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     update({ status: "loading" })
     const restored = await connectSilently()
     if (current !== attempt) return
+    // Stopped meanwhile: don't start a session nothing follows. The next start() tries again.
+    if (activeStarts === 0) {
+      restoredFor = undefined
+      return
+    }
     if (restored) startSession(restored)
     else update({ status: "signed-out" })
   }
@@ -232,6 +248,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
       if (state.status === "loading") update({ status: "signed-out" })
       return () => {}
     }
+    activeStarts++
     const unsubscribe = orbClient.onContextChange(handleContext)
     let wait: ReturnType<typeof setTimeout> | undefined
     // Orb can send its context after the page loads
@@ -242,6 +259,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
       }, CONTEXT_WAIT_MS)
     }
     return () => {
+      activeStarts--
       clearTimeout(wait)
       unsubscribe()
     }
