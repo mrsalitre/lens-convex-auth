@@ -27,3 +27,5 @@ export const DEFAULT_CONVEX_TOKEN_ISSUER = "https://lens-convex-auth.local"
 export const DEFAULT_CONVEX_TOKEN_AUDIENCE = "convex"
 export const DEFAULT_CONVEX_TOKEN_KEY_ID = "convex-auth-1"
 export const DEFAULT_CONVEX_TOKEN_ENDPOINT = "/api/convex-token"
+// The route that exchanges an Orb access token for a Convex token (lens-convex-auth/orb)
+export const DEFAULT_ORB_CONVEX_TOKEN_ENDPOINT = "/api/convex-token/orb"

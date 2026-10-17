@@ -14,12 +14,17 @@ export default defineConfig([
     // Built together so they share one copy of the core (the React components take the `auth` object
     // created with the main entry), and the styled components share the hooks' state. Browser-only code, so Next.js treats it as client code, which also
     // lets Server Components render <LensAuthProvider> and <SignInButton>.
-    entry: { index: "src/core/index.ts", "react/index": "src/react/index.ts", "react/ui/index": "src/react/ui/index.ts" },
+    entry: {
+      index: "src/core/index.ts",
+      "react/index": "src/react/index.ts",
+      "react/ui/index": "src/react/ui/index.ts",
+      "orb/index": "src/orb/index.ts",
+    },
     banner: { js: '"use client";' },
   },
   {
     ...shared,
-    entry: { "server/index": "src/server/index.ts", "convex/index": "src/convex/index.ts" },
+    entry: { "server/index": "src/server/index.ts", "convex/index": "src/convex/index.ts", "orb/server": "src/orb/server.ts" },
   },
   {
     ...shared,
