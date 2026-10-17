@@ -13,6 +13,8 @@ const ConnectButton = React.lazy(() => import("thirdweb/react").then((m) => ({ d
 export type SignInButtonProps = {
   /** Defaults to "Sign in" */
   label?: React.ReactNode
+  /** Shown instead of `label` inside the Orb app (with the provider's `orb`). Defaults to "Sign in with Orb". */
+  orbLabel?: React.ReactNode
   /** Defaults to "Logout" */
   signOutLabel?: React.ReactNode
   /** thirdweb modal theme. Defaults to the page's theme (a `dark` class on <html>, or the system's). */
@@ -24,9 +26,17 @@ export type SignInButtonProps = {
 }
 
 // Connects a wallet (the account dialog then opens to pick or create a Lens account) and signs out. Add
-// <AccountDialog /> too, or your own dialog: the provider doesn't render one.
-export function SignInButton({ label = "Sign in", signOutLabel = "Logout", theme, className, connectButtonProps }: SignInButtonProps) {
-  const { auth, wallet, status, signOut } = useLensAuth()
+// <AccountDialog /> too, or your own dialog: the provider doesn't render one. Inside the Orb app (with the
+// provider's `orb`), it signs in with the Orb profile instead.
+export function SignInButton({
+  label = "Sign in",
+  orbLabel = "Sign in with Orb",
+  signOutLabel = "Logout",
+  theme,
+  className,
+  connectButtonProps,
+}: SignInButtonProps) {
+  const { auth, wallet, status, signOut, orb } = useLensAuth()
   const documentTheme = useDocumentTheme()
   const [mounted, setMounted] = React.useState(false)
   React.useEffect(() => setMounted(true), [])
@@ -41,7 +51,15 @@ export function SignInButton({ label = "Sign in", signOutLabel = "Logout", theme
   // thirdweb's ConnectButton doesn't render the same on the server and the client
   if (!mounted) return placeholder
 
-  if (!wallet) {
+  if (orb && status === "signed-out") {
+    return (
+      <Button variant="outline" size="xl" className={cn("min-w-[165px] px-0", className)} disabled={orb.signingIn} onClick={() => void orb.signIn()}>
+        {orbLabel}
+      </Button>
+    )
+  }
+
+  if (!wallet && !orb) {
     return (
       <React.Suspense fallback={placeholder}>
         <ConnectButton

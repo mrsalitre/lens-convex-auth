@@ -8,6 +8,7 @@ export {
   type LensAuthContextValue,
   type LensAuthProviderProps,
   type LensAuthStatus,
+  type OrbSignInControls,
   type SignedInAccount,
 } from "./provider"
 export { useAccountPicker, type AccountPickerState, type PickerAccount } from "./useAccountPicker"

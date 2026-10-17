@@ -5,6 +5,7 @@ import type { Account as ThirdwebAccount, Wallet } from "thirdweb/wallets"
 import { ConvexProviderWithAuth, useConvexAuth, type ConvexReactClient } from "convex/react"
 import type { LensAuth } from "../core/auth"
 import { TOKENS_CHANGED_EVENT } from "../core/tokens"
+import type { OrbAuthSource, OrbSessionState } from "../orb/types"
 
 export type SignedInAccount = {
   /** Lens account address, lowercased */
@@ -23,11 +24,28 @@ export type LensAuthStatus =
   /** Signed in to a Lens account (Convex is authenticated as it too) */
   | "signed-in"
 
+// Signing in with the Orb profile, while the app runs inside Orb
+export type OrbSignInControls = {
+  /** Opens Orb's approval sheet. Resolves once signed in, or with the reason in `error`. */
+  signIn: () => Promise<void>
+  /** True while Orb's approval sheet is open */
+  signingIn: boolean
+  /** Why the last sign-in failed or the session ended, for showing to the viewer */
+  error: string | null
+}
+
 export type LensAuthContextValue = {
   auth: LensAuth
   status: LensAuthStatus
   isLoading: boolean
   isSignedIn: boolean
+  /**
+   * How the viewer signs in: "orb" while the app runs inside the Orb app and the provider got `orb`, "wallet"
+   * everywhere else
+   */
+  method: "wallet" | "orb"
+  /** Signing in with Orb when `method` is "orb"; null otherwise */
+  orb: OrbSignInControls | null
   /** The connected thirdweb wallet account */
   wallet: ThirdwebAccount | undefined
   /** The signed-in Lens account */
@@ -35,7 +53,8 @@ export type LensAuthContextValue = {
   /**
    * Ends the Lens session and disconnects the wallet. The session is revoked on the Lens API, so its tokens
    * stop working even if they were copied; `revoked` is false when that failed (the session is cleared
-   * from this browser either way).
+   * from this browser either way). Inside Orb, it tells Orb the viewer signed out and resolves `revoked:
+   * false`: Orb keeps the session's refresh token, and the access token stays valid until it expires.
    */
   signOut: () => Promise<{ revoked: boolean }>
   /** Opens the account dialog, e.g. to switch to another account */
@@ -108,15 +127,38 @@ function useSessionKey(auth: LensAuth): string | null | undefined {
   )
 }
 
+const subscribeToNothing = () => () => {}
+
+// Whether the viewer signs in with Orb: the provider got `orb` and the page runs inside Orb. False on the
+// server and while hydrating, so the server's HTML matches.
+function useInsideOrb(orb: OrbAuthSource | undefined): boolean {
+  return React.useSyncExternalStore(subscribeToNothing, () => !!orb?.isInsideOrb(), () => false)
+}
+
+function useOrbState(orb: OrbAuthSource | undefined): OrbSessionState | null {
+  return React.useSyncExternalStore(orb?.subscribe ?? subscribeToNothing, () => orb?.getState() ?? null, () => null)
+}
+
+// Like useSessionKey, for the Orb session: renewals keep it the same, a new sign-in changes it
+function orbSessionKey(state: OrbSessionState | null): string | null | undefined {
+  if (!state || state.status === "loading") return undefined
+  return state.status === "signed-in" && state.account ? `orb:${state.sessionId}:${state.account.address}` : null
+}
+
 // Signs Convex in as the Lens account the user signed in with. A new session gets a new
 // fetchAccessToken, which makes Convex fetch its token again.
-function createUseConvexAuth(auth: LensAuth) {
+function createUseConvexAuth(auth: LensAuth, orb: OrbAuthSource | undefined) {
   return function useLensConvexAuth() {
-    const sessionKey = useSessionKey(auth)
+    const insideOrb = useInsideOrb(orb)
+    const lensSessionKey = useSessionKey(auth)
+    const orbKey = orbSessionKey(useOrbState(orb))
+    const sessionKey = insideOrb ? orbKey : lensSessionKey
     const fetchAccessToken = React.useCallback(
       async ({ forceRefreshToken }: { forceRefreshToken: boolean }) =>
-        sessionKey ? auth.fetchConvexToken(forceRefreshToken) : null,
-      [sessionKey],
+        !sessionKey ? null
+        : insideOrb && orb ? orb.fetchConvexToken(forceRefreshToken)
+        : auth.fetchConvexToken(forceRefreshToken),
+      [sessionKey, insideOrb],
     )
     return { isLoading: sessionKey === undefined, isAuthenticated: !!sessionKey, fetchAccessToken }
   }
@@ -127,6 +169,11 @@ export type LensAuthProviderProps = {
   auth: LensAuth
   /** Your ConvexReactClient. Omit to use the package without Convex. */
   convex?: ConvexReactClient
+  /**
+   * From createOrbAuth() (lens-convex-auth/orb), created once at module level. Inside the Orb app, viewers then
+   * sign in with their Orb profile instead of a wallet; everywhere else nothing changes.
+   */
+  orb?: OrbAuthSource
   /**
    * Called after the user signs in from the account dialog (picking an account or creating one), once
    * Convex accepts the session. A good place to create the user's row: `convex.mutation(api.users.ensure)`
@@ -151,10 +198,10 @@ const AutoConnect = React.lazy(() => import("thirdweb/react").then((m) => ({ def
 
 // Wraps the app in thirdweb, Lens and (optionally) Convex providers wired to one session. It renders no UI:
 // add <AccountDialog /> from lens-convex-auth/react/ui inside it, or your own dialog (see useAccountDialog).
-export function LensAuthProvider({ auth, convex, onSignIn, onAccountChange, wallets, children }: LensAuthProviderProps) {
-  const [useConvexAuthHook] = React.useState(() => createUseConvexAuth(auth))
+export function LensAuthProvider({ auth, convex, orb, onSignIn, onAccountChange, wallets, children }: LensAuthProviderProps) {
+  const [useConvexAuthHook] = React.useState(() => createUseConvexAuth(auth, orb))
   const content = (
-    <LensAuthState auth={auth} onSignIn={onSignIn} onAccountChange={onAccountChange} withConvex={!!convex} wallets={wallets}>
+    <LensAuthState auth={auth} orb={orb} onSignIn={onSignIn} onAccountChange={onAccountChange} withConvex={!!convex} wallets={wallets}>
       {children}
     </LensAuthState>
   )
@@ -188,8 +235,9 @@ function writeSelectedAccount(auth: LensAuth, account: SignedInAccount | null) {
   } catch {}
 }
 
-function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, children }: {
+function LensAuthState({ auth, orb, onSignIn, onAccountChange, withConvex, wallets, children }: {
   auth: LensAuth
+  orb?: OrbAuthSource
   onSignIn?: LensAuthProviderProps["onSignIn"]
   onAccountChange?: LensAuthProviderProps["onAccountChange"]
   withConvex: boolean
@@ -200,6 +248,8 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   const activeWallet = useActiveWallet()
   const { disconnect } = useDisconnect()
   const sessionKey = useSessionKey(auth)
+  const insideOrb = useInsideOrb(orb)
+  const orbState = useOrbState(orb)
   const [manualOpen, setManualOpen] = React.useState(false)
   const [pendingSignIn, setPendingSignIn] = React.useState<SignedInAccount | null>(null)
   // How many mounted components use the dialog's state (see useNoDialogWarning)
@@ -214,20 +264,25 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   // before completeSignIn saves it, so without this the account would show without its username.
   const [selected, setSelected] = React.useState<SignedInAccount | null>(null)
 
-  const account = React.useMemo<SignedInAccount | null>(() => {
+  const walletAccount = React.useMemo<SignedInAccount | null>(() => {
     if (!sessionKey) return null
     const address = sessionKey.slice(sessionKey.lastIndexOf(":") + 1)
     const username = selected?.address === address ? selected.username : readSelectedAccount(auth, address)
     return { address, username }
   }, [auth, sessionKey, selected])
 
+  const account = insideOrb ? (orbState?.status === "signed-in" ? orbState.account : null) : walletAccount
+
+  // Inside Orb, Orb picks the profile, so there's no account to choose
   const status: LensAuthStatus =
-    sessionKey === undefined ? "loading"
+    insideOrb ? (!orbState || orbState.status === "loading" ? "loading" : orbState.status === "signed-in" ? "signed-in" : "signed-out")
+    : sessionKey === undefined ? "loading"
     : sessionKey ? "signed-in"
     : wallet ? "choosing-account"
     : "signed-out"
 
-  useBackgroundRefresh(auth)
+  React.useEffect(() => (insideOrb && orb ? orb.start() : undefined), [orb, insideOrb])
+  useBackgroundRefresh(auth, !insideOrb)
   useAccountChange(status, account, onAccountChange)
   useNoDialogWarning(status, dialogUsers)
 
@@ -239,24 +294,43 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
   const signOut = React.useCallback(async () => {
     setManualOpen(false)
     setSelected(null)
+    if (insideOrb && orb) {
+      await orb.signOut()
+      return { revoked: false }
+    }
     writeSelectedAccount(auth, null)
     // Both clear their state synchronously (logout before its first await), so the next render sees
     // neither. A wallet left without a session would open the account dialog while logout() waits on
     // the network, and a session left without a wallet would reconnect it (see AutoConnect below).
     if (activeWallet) disconnect(activeWallet)
     return auth.logout()
-  }, [auth, activeWallet, disconnect])
+  }, [auth, orb, insideOrb, activeWallet, disconnect])
+
+  const orbSignIn = React.useCallback(async () => {
+    if (!orb) return
+    await orb.signIn()
+    const signedIn = orb.getState()
+    if (signedIn.status === "signed-in" && signedIn.account && onSignIn) setPendingSignIn(signedIn.account)
+  }, [orb, onSignIn])
+
+  const orbControls = React.useMemo<OrbSignInControls | null>(() => insideOrb && orbState ? {
+    signIn: orbSignIn,
+    signingIn: orbState.status === "signing-in",
+    error: orbState.error,
+  } : null, [insideOrb, orbState?.status, orbState?.error, orbSignIn])
 
   const value = React.useMemo<LensAuthContextValue>(() => ({
     auth,
     status,
     isLoading: status === "loading",
     isSignedIn: status === "signed-in",
+    method: insideOrb ? "orb" : "wallet",
+    orb: orbControls,
     wallet,
     account,
     signOut,
     openAccountDialog: () => setManualOpen(true),
-  }), [auth, status, wallet, account, signOut])
+  }), [auth, status, insideOrb, orbControls, wallet, account, signOut])
 
   const required = status === "choosing-account"
   const dialog = React.useMemo<AccountDialogState>(() => ({
@@ -283,7 +357,7 @@ function LensAuthState({ auth, onSignIn, onAccountChange, withConvex, wallets, c
         {/* After a reload the Lens session is restored from storage, but the wallet only comes back if
             something reconnects it: SignInButton's ConnectButton does, but it's only shown while no
             wallet is connected and apps often hide it once signed in. */}
-        {sessionKey && !wallet && (
+        {sessionKey && !wallet && !insideOrb && (
           <React.Suspense fallback={null}>
             <AutoConnect client={auth.thirdwebClient} chain={auth.chain} wallets={wallets} />
           </React.Suspense>
@@ -369,8 +443,9 @@ function isProduction() {
 }
 
 // Refreshes the tokens a minute before they expire, so Convex and API calls always have a fresh one
-function useBackgroundRefresh(auth: LensAuth) {
+function useBackgroundRefresh(auth: LensAuth, enabled: boolean) {
   React.useEffect(() => {
+    if (!enabled) return
     let timeout: ReturnType<typeof setTimeout> | undefined
     let stopped = false
 
@@ -397,5 +472,5 @@ function useBackgroundRefresh(auth: LensAuth) {
       unsubscribe()
       if (timeout) clearTimeout(timeout)
     }
-  }, [auth])
+  }, [auth, enabled])
 }

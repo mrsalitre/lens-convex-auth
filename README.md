@@ -12,6 +12,8 @@ creation, and **Convex** auth, wired to one session.
 - Lens tokens are kept fresh in the background and shared by the Lens SDK, Convex, and your API routes
 - Switching accounts and logging out revoke the Lens session, so tokens copied from the browser stop working
 - Convex functions know which Lens account is calling (`requireLensAccount(ctx)`)
+- Optional: inside the [Orb](https://orb.club) app, viewers sign in with their Orb profile in one tap, and
+  Convex sees the same Lens account ([Inside the Orb app](#inside-the-orb-app-optional))
 
 ```
 wallet (thirdweb) ──▶ Lens challenge ──▶ signature ──▶ Lens tokens (localStorage, auto-refreshed)
@@ -368,6 +370,116 @@ main entry.
 
 Omit the `convex` prop. Everything else works the same.
 
+## Inside the Orb app (optional)
+
+[Orb](https://orb.club) is a Lens social app for phones that opens web apps full screen. Inside it, there's
+no wallet to connect: Orb signs the viewer in with their Orb profile, which is a Lens account. With the
+`orb` prop, the provider uses Orb's sign-in while the app runs inside Orb, and the wallet sign-in everywhere
+else, so one app works in both. Apps that don't pass it don't change, and don't need the Orb SDK.
+
+### 1. Install the Orb SDK
+
+```bash
+pnpm add @orbclub/apps-sdk
+```
+
+### 2. Create the Orb instance and pass it to the provider
+
+```ts
+// lib/auth.ts
+import { createLensAuth } from "lens-convex-auth"
+import { createOrbAuth } from "lens-convex-auth/orb"
+
+export const auth = createLensAuth({ /* as before */ })
+export const orb = createOrbAuth()
+```
+
+```tsx
+// app/providers.tsx
+<LensAuthProvider auth={auth} orb={orb} convex={convex}>
+```
+
+### 3. Add the token route
+
+Convex can't verify Orb's tokens either, so a second route exchanges the Orb access token for the same
+kind of Convex token. Your server asks Orb to check the token each time.
+
+```ts
+// app/api/convex-token/orb/route.ts
+import { createOrbConvexTokenHandler } from "lens-convex-auth/orb/server"
+
+export const POST = createOrbConvexTokenHandler({
+  allowSandbox: process.env.NODE_ENV === "development", // see "Test it in the Orb sandbox"
+})
+```
+
+Nothing changes in Convex: `requireLensAccount(ctx)` returns the Orb profile's Lens account.
+
+### 4. Sign in
+
+`<SignInButton>` shows "Sign in with Orb" inside Orb. With your own UI, `useLensAuth()` tells you which
+sign-in applies:
+
+```tsx
+const { method, status, orb } = useLensAuth()
+
+if (orb && status === "signed-out") {
+  return (
+    <>
+      <button onClick={orb.signIn} disabled={orb.signingIn}>Sign in with Orb</button>
+      {orb.error && <p>{orb.error}</p>}
+    </>
+  )
+}
+```
+
+`status` is `"loading"` while Orb signs the viewer back in after a reload, then `"signed-in"` or
+`"signed-out"`; it's never `"choosing-account"` inside Orb, and the account dialog never opens there.
+
+### How it differs from the wallet sign-in
+
+- **Tokens stay in memory**, as Orb asks. Orb keeps the refresh token and renews the session in the
+  background, and signs the viewer back in after a reload (when they chose to stay signed in, and their
+  Orb version supports it). Otherwise the session ends with its access token, after about ten minutes.
+- **The session follows Orb's profile.** All Orb profiles on a phone share the page's storage, so switching
+  profiles in Orb ends the session and signs the new profile in, if it already approved your app.
+- **`signOut()` resolves `{ revoked: false }`.** It tells Orb the viewer signed out; the page never holds a
+  refresh token to revoke, and the access token works until it expires.
+- **The Lens SDK stays public.** Lens React hooks work, but not as the viewer. For transactions, tips and
+  Orb's other actions, use `orb.client` (the page's
+  [`OrbAppsClient`](https://www.npmjs.com/package/@orbclub/apps-sdk)), available once the provider started.
+- **Your API routes:** send requests with `orb.fetch` and check them with `getOrbSession(request)` from
+  `lens-convex-auth/orb/server`, instead of `auth.fetch` and `getLensSession`.
+
+### Test it in the Orb sandbox
+
+The [Orb sandbox](https://orb-apps.vercel.app/sandbox/) shows your app inside a simulated Orb while it runs
+on `localhost`. In development only:
+
+1. Let the sandbox frame your app:
+
+   ```ts
+   // next.config.ts
+   async headers() {
+     if (process.env.NODE_ENV !== "development") return []
+     return [{
+       source: "/:path*",
+       headers: [{
+         key: "Content-Security-Policy",
+         value: "frame-ancestors 'self' https://orb-apps.vercel.app http://localhost:* http://127.0.0.1:*",
+       }],
+     }]
+   },
+   ```
+
+2. Open the sandbox, add `http://localhost:3000` to its launcher, and open it. Chrome asks before a public
+   site loads `localhost`: allow it, or the frame stays blank.
+3. Sign in with Orb on the sandbox page (a QR code you scan with Orb on your phone), then sign in from your
+   app. The sandbox hands your app tokens for its own domain, which the token route accepts only with
+   `allowSandbox`.
+
+To open it in the real Orb app, send the Orb team your app's HTTPS address.
+
 ## API
 
 ### `createLensAuth(options)` (`lens-convex-auth`)
@@ -400,19 +512,23 @@ Renders no UI: add `<AccountDialog />`, or [your own](#your-own-account-dialog).
 | --- | --- |
 | `auth` | From `createLensAuth` |
 | `convex` | Your `ConvexReactClient` (optional) |
+| `orb` | From `createOrbAuth` (optional): inside the Orb app, sign in with the Orb profile. See [Inside the Orb app](#inside-the-orb-app-optional) |
 | `onSignIn(account)` | Called after a sign-in from the dialog, once Convex accepts it |
 | `onAccountChange(previous, next)` | Called when the signed-in account changes: sign-in, switch, log out, or the session ending. See the recipe above |
 | `wallets` | Wallets to reconnect after a reload while a Lens session is stored (default: thirdweb's). Pass the same list as `SignInButton`'s `connectButtonProps.wallets` if you customize it |
 
 ### `useLensAuth()`
 
-`{ status, isLoading, isSignedIn, wallet, account, signOut, openAccountDialog, auth }`
+`{ status, isLoading, isSignedIn, method, orb, wallet, account, signOut, openAccountDialog, auth }`
 
 `signOut()` disconnects the wallet and logs out, revoking the session. It resolves `{ revoked }`, false
 when revoking failed (the session is cleared from the browser either way), so you can tell the user.
 
 `status` is `"loading"` (first render and SSR), `"signed-out"`, `"choosing-account"` (wallet connected,
 no Lens account yet) or `"signed-in"`. `account` is `{ address, username }`.
+
+`method` is `"orb"` while the app runs inside Orb with the provider's `orb`, and `"wallet"` otherwise. `orb`
+is then `{ signIn, signingIn, error }`, and `null` with the wallet sign-in.
 
 ### `useAccountDialog()`
 
@@ -444,6 +560,7 @@ The styled components, built on the hooks above. `<SignInButton>` takes:
 | Prop | Default | |
 | --- | --- | --- |
 | `label` | `"Sign in"` | |
+| `orbLabel` | `"Sign in with Orb"` | Inside the Orb app |
 | `signOutLabel` | `"Logout"` | |
 | `theme` | page theme | thirdweb modal theme: a `dark`/`light` class on `<html>`, else the system's |
 | `className` | | For the loading and logout buttons |
@@ -462,6 +579,31 @@ your pages' initial bundle.
 Options: `lensAppAddress` (required), `environment`, and for Convex tokens `privateKey` (default
 `process.env.CONVEX_AUTH_PRIVATE_KEY`), `issuer`, `audience`, `keyId`. If you change `issuer` or
 `audience`, pass the same values to `lensAuthProvider`.
+
+### Orb (`lens-convex-auth/orb`, `lens-convex-auth/orb/server`)
+
+Need `@orbclub/apps-sdk`. `createOrbAuth(options?)`:
+
+| Option | Default | |
+| --- | --- | --- |
+| `convexTokenEndpoint` | `"/api/convex-token/orb"` | Where the Orb token route lives |
+| `stayLoggedIn` | `true` | Ask the viewer to stay signed in, so Orb renews the session. With `false`, it ends after about ten minutes, and a reload signs the viewer out |
+| `applyTheme` | `true` | Set `data-orb-theme` and `color-scheme` on `<html>` from Orb's theme |
+| `applySafeAreaInsets` | `true` | Write Orb's insets to `--orb-safe-top` (and `-bottom`, `-left`, `-right`) on `<html>`. Inside Orb, `env(safe-area-inset-*)` is zero |
+
+Returns `orb` with `isInsideOrb()`, `client`, `context`, `getState()`, `subscribe()`, `signIn()`,
+`signOut()`, `fetch()` and `fetchConvexToken()`.
+
+On the server:
+
+- `createOrbConvexTokenHandler(options?)`: `POST` handler. Answers 503 when Orb can't be reached
+- `getOrbSession(request, options?)`: `{ account, expiresAt } | null` from `Authorization: Bearer`
+- `verifyOrbSession(accessToken, options?)`: the same, from a token
+
+`getOrbSession` and `verifyOrbSession` throw `OrbAuthUnavailableError` (exported from the same entry) when
+Orb can't be reached: answer 503 rather than signing the viewer out. Options: `acceptOrbApp` (default
+`true`, see [Security](#security)), `allowSandbox` (default `false`), `timeoutMs` (default 5000), and the
+Convex token options of `lens-convex-auth/server`.
 
 ### Convex (`lens-convex-auth/convex`)
 
@@ -495,6 +637,22 @@ third-party scripts only from sources you trust.
 
 If revoking fails (offline, or the Lens API is down), the session is still cleared from the browser,
 `signOut()` resolves `{ revoked: false }`, and the refresh token works until Lens expires it.
+
+### Inside the Orb app
+
+The page keeps Orb's ID and access tokens in memory only; Orb keeps the refresh token. Signing out tells
+Orb, and the access token works until it expires, about ten minutes at most. Viewers can disconnect your
+app in Orb > Connected Apps.
+
+Orb issues the tokens of every app running inside it to Orb's own Lens app, with no domain, so a token
+doesn't say which Orb app it was given to. The Orb token route accepts them (`acceptOrbApp`, on by
+default), so someone running another Orb app could send your server the tokens its viewers gave it and get
+Convex tokens as those viewers. This comes with running inside Orb, and Orb's own server checks work the
+same way. If that's not acceptable for your app, set `acceptOrbApp: false` (then Convex refuses every viewer signed in inside Orb),
+and don't let an Orb sign-in alone authorize high-value actions.
+
+`allowSandbox` accepts the sandbox's tokens, which it gives to every app it frames: keep it off in
+production.
 
 ## Troubleshooting
 
