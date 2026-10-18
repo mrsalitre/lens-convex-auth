@@ -5,7 +5,7 @@ import type { Chain as ViemChain } from "viem"
 import { ADDRESS_RE, DEFAULT_CONVEX_TOKEN_ENDPOINT, lensApiOrigin, type LensEnvironmentName } from "./constants"
 import { decodeJwtPayload, lensSessionFromIdToken } from "./jwt"
 import { LensTokenStorage } from "./storage"
-import { TokenService, type LensCredentials } from "./tokens"
+import { TokenService, type ExternalCredentials, type LensCredentials } from "./tokens"
 import { lensThirdwebChain, lensViemChain } from "./wallet"
 
 export type LensAuthOptions = {
@@ -103,8 +103,12 @@ export function createLensAuth(options: LensAuthOptions) {
 
   // True when there's a valid session, refreshing its tokens first if needed (a session that can't be
   // refreshed is cleared). Also resumes it in the Lens client, so Lens SDK calls and hooks act as the
-  // signed-in account.
+  // signed-in account. An external session (setExternalSession) counts, and goes first.
   async function resumeSession(): Promise<boolean> {
+    if (tokens.getExternalSession()) {
+      if (!lensClient.currentSession?.isSessionClient()) await lensClient.resumeSession()
+      return true
+    }
     if (!(await tokens.isAuthenticated())) return false
     if (!lensClient.currentSession?.isSessionClient()) await lensClient.resumeSession()
     return true
@@ -153,6 +157,20 @@ export function createLensAuth(options: LensAuthOptions) {
     const revoked = await tokens.revokeSession(previous)
     if (!revoked) console.warn("lens-convex-auth: couldn't revoke the previous Lens session")
     return revoked
+  }
+
+  // Makes a session held in memory the Lens client's, so Lens SDK calls and hooks act as its account; null ends
+  // it. Used by lens-convex-auth/orb inside the Orb app. Call it again with each renewal: the SDK keeps its own
+  // copy of the tokens. Nothing is stored, refreshed or revoked, and the stored wallet session stays as it is.
+  async function setExternalSession(credentials: ExternalCredentials | null): Promise<void> {
+    tokens.setExternalSession(credentials)
+    if (!credentials) {
+      lensClient.currentSession = lensClient
+      return
+    }
+    // Resuming reads the credentials again, replacing the SDK's copy
+    const resumed = await lensClient.resumeSession()
+    if (resumed.isErr()) throw resumed.error
   }
 
   // Signs out: clears the session from this browser, then revokes it on the Lens API, so its tokens
@@ -212,6 +230,7 @@ export function createLensAuth(options: LensAuthOptions) {
     signChallenge: signLensChallenge,
     authenticate,
     startSession,
+    setExternalSession,
     logout,
     fetch: authFetch,
     fetchConvexToken,

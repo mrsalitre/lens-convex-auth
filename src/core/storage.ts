@@ -28,6 +28,9 @@ export class LensTokenStorage implements IStorageProvider {
     if (typeof window === "undefined") return null
     try {
       if (!this.isCredentials(key)) return localStorage.getItem(this.prefix + key)
+      // An external session has no refresh token: its owner renews it before the SDK would try
+      const external = this.tokens.getExternalSession()
+      if (external) return JSON.stringify({ data: { ...external, refreshToken: "" }, metadata: this.credentialsMetadata(key) })
       const tokens = this.tokens.getStoredTokens()
       if (!tokens) return null
       return JSON.stringify({
@@ -43,6 +46,8 @@ export class LensTokenStorage implements IStorageProvider {
     if (typeof window === "undefined") return
     try {
       if (!this.isCredentials(key)) return localStorage.setItem(this.prefix + key, value)
+      // Never write an external session's tokens to storage
+      if (this.tokens.getExternalSession()) return
       const parsed = JSON.parse(value)
       const data = typeof parsed.data === "string" ? JSON.parse(parsed.data) : parsed.data
       if (data?.accessToken && data?.idToken && data?.refreshToken) {
@@ -56,6 +61,8 @@ export class LensTokenStorage implements IStorageProvider {
     if (typeof window === "undefined") return
     try {
       if (!this.isCredentials(key)) return localStorage.removeItem(this.prefix + key)
+      // The SDK logging out of an external session: its owner ends it, and the stored session stays
+      if (this.tokens.getExternalSession()) return
       this.tokens.clearTokens()
       localStorage.removeItem(this.metadataKey(key))
     } catch {}

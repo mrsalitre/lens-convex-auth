@@ -10,6 +10,10 @@ export interface TokenData {
 
 export type LensCredentials = Pick<TokenData, "accessToken" | "idToken" | "refreshToken">
 
+// A session the app holds in memory only and renews itself, such as one from Orb (lens-convex-auth/orb):
+// it has no refresh token, and nothing here stores, refreshes or revokes it
+export type ExternalCredentials = Pick<TokenData, "accessToken" | "idToken">
+
 // Dispatched on window whenever tokens are stored or cleared in this tab
 export const TOKENS_CHANGED_EVENT = "lens-convex-auth:tokens-changed"
 
@@ -48,6 +52,7 @@ function notifyTokensChanged() {
 export class TokenService {
   readonly storageKeys: { accessToken: string; idToken: string; refreshToken: string; expiresAt: string }
   private refreshPromise: Promise<TokenData | null> | null = null
+  private external: ExternalCredentials | null = null
 
   constructor(private options: { storagePrefix: string; graphqlUrl: string }) {
     const p = options.storagePrefix
@@ -57,6 +62,15 @@ export class TokenService {
       refreshToken: `${p}refresh_token`,
       expiresAt: `${p}token_expires_at`,
     }
+  }
+
+  // The Lens SDK uses an external session, while there is one, instead of the stored one (which stays as it is)
+  setExternalSession(credentials: ExternalCredentials | null): void {
+    this.external = credentials
+  }
+
+  getExternalSession(): ExternalCredentials | null {
+    return this.external
   }
 
   storeTokens(tokens: TokenData): void {

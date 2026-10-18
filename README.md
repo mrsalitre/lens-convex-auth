@@ -445,11 +445,40 @@ if (orb && status === "signed-out") {
   profiles in Orb ends the session and signs the new profile in, if it already approved your app.
 - **`signOut()` resolves `{ revoked: false }`.** It tells Orb the viewer signed out; the page never holds a
   refresh token to revoke, and the access token works until it expires.
-- **The Lens SDK stays public.** Lens React hooks work, but not as the viewer. For transactions, tips and
-  Orb's other actions, use `orb.client` (the page's
-  [`OrbAppsClient`](https://www.npmjs.com/package/@orbclub/apps-sdk)), available once the provider started.
+- **The Lens SDK stays public**, unless you pass `lens` (below). For tips, sticker packs and Orb's other
+  actions, use `orb.client` (the page's [`OrbAppsClient`](https://www.npmjs.com/package/@orbclub/apps-sdk)),
+  available once the provider started.
 - **Your API routes:** send requests with `orb.fetch` and check them with `getOrbSession(request)` from
   `lens-convex-auth/orb/server`, instead of `auth.fetch` and `getLensSession`.
+
+### Lens SDK calls as the Orb viewer
+
+Apps that write to Lens (posts, comments, reactions, follows, collects) can keep doing it inside Orb. Pass
+your auth instance as `lens`:
+
+```ts
+export const orb = createOrbAuth({ lens: auth })
+```
+
+While the viewer is signed in with Orb, the Orb session is then the Lens client's session: `auth.lensClient`
+and Lens React hooks act as the viewer's account, and `auth.resumeSession()` resolves `true`. The tokens stay in
+memory and are handed to the Lens client again with each renewal; the wallet session stored in this browser
+isn't touched. Lens checks these tokens itself (it issued them), and treats the session as Orb's Lens app:
+what the viewer posts or collects from inside Orb is credited to Orb's app, not yours.
+
+Where you'd send a Lens operation's transaction with a wallet, use `orb.handleOperation` inside Orb:
+
+```ts
+import { handleOperationWith } from "@lens-protocol/client/viem"
+
+const send = useLensAuth().method === "orb" ? orb.handleOperation : handleOperationWith(walletClient)
+await post(session, { contentUri }).andThen(send).andThen(session.waitForTransaction)
+```
+
+Orb's sessions act through a wallet Orb keeps for the profile, usually signless, so Lens often carries the
+operation out itself and `handleOperation` only passes the hash on. A transaction that has to be signed opens
+Orb's approval sheet. Transactions with a native amount are refused for now: Orb doesn't document the unit
+of its `amount` yet. Lens account actions, collects included, pay from the account and carry none.
 
 ### Test it in the Orb sandbox
 
@@ -590,9 +619,13 @@ Need `@orbclub/apps-sdk`. `createOrbAuth(options?)`:
 | `stayLoggedIn` | `true` | Ask the viewer to stay signed in, so Orb renews the session. With `false`, it ends after about ten minutes, and a reload signs the viewer out |
 | `applyTheme` | `true` | Set `data-orb-theme` and `color-scheme` on `<html>` from Orb's theme |
 | `applySafeAreaInsets` | `true` | Write Orb's insets to `--orb-safe-top` (and `-bottom`, `-left`, `-right`) on `<html>`. Inside Orb, `env(safe-area-inset-*)` is zero |
+| `lens` | | Your `createLensAuth` instance: the Orb session becomes its Lens client's session. See [Lens SDK calls as the Orb viewer](#lens-sdk-calls-as-the-orb-viewer) |
 
 Returns `orb` with `isInsideOrb()`, `client`, `context`, `getState()`, `subscribe()`, `signIn()`,
-`signOut()`, `fetch()` and `fetchConvexToken()`.
+`signOut()`, `fetch()`, `fetchConvexToken()` and `handleOperation`.
+
+`auth.setExternalSession(credentials | null)` (`lens-convex-auth`) is what `lens` uses: it makes an in-memory
+session the Lens client's, without storing, refreshing or revoking it.
 
 On the server:
 
@@ -642,7 +675,8 @@ If revoking fails (offline, or the Lens API is down), the session is still clear
 
 The page keeps Orb's ID and access tokens in memory only; Orb keeps the refresh token. Signing out tells
 Orb, and the access token works until it expires, about ten minutes at most. Viewers can disconnect your
-app in Orb > Connected Apps.
+app in Orb > Connected Apps. The access token goes only to your server and Orb, and, with `lens`, to the Lens
+API, which issued it.
 
 Orb issues the tokens of every app running inside it to Orb's own Lens app, with no domain, so a token
 doesn't say which Orb app it was given to. The Orb token route accepts them (`acceptOrbApp`, on by
