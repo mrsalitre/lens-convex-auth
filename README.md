@@ -480,6 +480,10 @@ operation out itself and `handleOperation` only passes the hash on. A transactio
 Orb's approval sheet. Transactions with a native amount are refused for now: Orb doesn't document the unit
 of its `amount` yet. Lens account actions, collects included, pay from the account and carry none.
 
+If Orb no longer holds the app's approval (it can clear it, and the sandbox drops it when its own sign-in
+ends), Orb refuses the transaction. `handleOperation` then ends the Orb session and fails with "Your Orb
+session ended. Sign in again.", so the viewer signs in again instead of acting on a stale session.
+
 ### Test it in the Orb sandbox
 
 The [Orb sandbox](https://orb-apps.vercel.app/sandbox/) shows your app inside a simulated Orb while it runs

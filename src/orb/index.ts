@@ -16,6 +16,7 @@ import {
   OrbConnectDeclinedError,
   OrbConnectTimeoutError,
   OrbNotAvailableError,
+  OrbTransactionError,
   isInsideOrb,
   type OrbAppContext,
   type OrbAuthTokens,
@@ -366,20 +367,31 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
       throw new Error("This transaction has to be signed by another wallet than Orb's.")
     }
     const custom = "customData" in raw ? raw.customData : null
-    const { transactionHash } = await client.performTransaction({
-      to: raw.to,
-      chainId: raw.chainId,
-      data: raw.data,
-      amount: "0",
-      maxGas: raw.gasLimit,
-      maxFeePerGas: raw.maxFeePerGas,
-      maxPriorityFeePerGas: raw.maxPriorityFeePerGas,
-      nonce: raw.nonce,
-      gasPerPubdata: custom?.gasPerPubdata,
-      paymaster: custom?.paymasterParams?.paymaster,
-      paymasterInput: custom?.paymasterParams?.paymasterInput,
-      customSignature: custom?.customSignature ?? undefined,
-    })
+    const { transactionHash } = await client
+      .performTransaction({
+        to: raw.to,
+        chainId: raw.chainId,
+        data: raw.data,
+        amount: "0",
+        maxGas: raw.gasLimit,
+        maxFeePerGas: raw.maxFeePerGas,
+        maxPriorityFeePerGas: raw.maxPriorityFeePerGas,
+        nonce: raw.nonce,
+        gasPerPubdata: custom?.gasPerPubdata,
+        paymaster: custom?.paymasterParams?.paymaster,
+        paymasterInput: custom?.paymasterParams?.paymasterInput,
+        customSignature: custom?.customSignature ?? undefined,
+      })
+      .catch((err: unknown) => {
+        // Orb no longer holds this page's approval (it cleared it, or the session behind it ended): the
+        // session the page holds is stale
+        if (err instanceof OrbTransactionError && err.code === "not_connected") {
+          const message = "Your Orb session ended. Sign in again."
+          if (tokens) endSession(message)
+          throw new Error(message)
+        }
+        throw err
+      })
     if (!transactionHash) throw new Error("Orb didn't return the transaction's hash.")
     return txHash(transactionHash)
   }
