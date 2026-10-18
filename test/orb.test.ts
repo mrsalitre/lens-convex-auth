@@ -47,7 +47,7 @@ vi.mock("@orbclub/apps-sdk/client", async (importOriginal) => {
   return { ...actual, OrbAppsClient: FakeOrbAppsClient, isInsideOrb: () => host.inside }
 })
 
-import { OrbConnectDeclinedError } from "@orbclub/apps-sdk/client"
+import { OrbConnectDeclinedError, OrbTransactionError } from "@orbclub/apps-sdk/client"
 import { createOrbAuth } from "../src/orb"
 
 function jwt(claims: Record<string, unknown>) {
@@ -394,5 +394,17 @@ describe("handleOperation", () => {
     expect(refused.isErr() && refused.error.name).toBe("ValidationError")
     const declined = await orb.handleOperation(sponsored() as never)
     expect(declined.isErr() && declined.error.name).toBe("SigningError")
+  })
+
+  it("ends the session when Orb no longer holds the page's approval", async () => {
+    host.performTransaction = vi.fn(async () => {
+      throw new OrbTransactionError("Connect this app with id_access before requesting transactions", { code: "not_connected" })
+    })
+    const orb = await startedOrb()
+    await orb.signIn()
+    expect(orb.getState().status).toBe("signed-in")
+    const result = await orb.handleOperation(sponsored() as never)
+    expect(result.isErr() && result.error.message).toMatch(/Your Orb session ended/)
+    expect(orb.getState()).toMatchObject({ status: "signed-out", account: null, error: "Your Orb session ended. Sign in again." })
   })
 })
