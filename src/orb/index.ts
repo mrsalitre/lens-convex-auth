@@ -51,6 +51,15 @@ export type OrbAuthOptions = {
 
 export type OrbAuth = ReturnType<typeof createOrbAuth>
 
+export type OrbOperationOptions = {
+  /**
+   * One key per transaction, such as the order's ID: 1–128 letters, digits, `.`, `_`, `:` or `-`. Orb sends at
+   * most one transaction per key (for the viewer and your origin, for 24 hours), so a retry under the same key
+   * gets the first one's result. Orb versions without key support ignore it.
+   */
+  idempotencyKey?: string
+}
+
 // Inside Orb, ask it to renew the session this long before the access token expires
 const RENEW_BEFORE_EXPIRY_MS = 60_000
 // How long to wait for Orb's context before showing the viewer as signed out
@@ -357,7 +366,10 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
 
   // Sends a transaction the Lens API prepared through Orb's approval sheet, signed by Orb's wallet for the
   // profile (the account manager Orb's sessions act through)
-  async function sendThroughOrb(raw: (SponsoredTransactionRequest | SelfFundedTransactionRequest)["raw"]): Promise<TxHash> {
+  async function sendThroughOrb(
+    raw: (SponsoredTransactionRequest | SelfFundedTransactionRequest)["raw"],
+    { idempotencyKey }: OrbOperationOptions,
+  ): Promise<TxHash> {
     if (!client) throw new OrbNotAvailableError()
     // Orb doesn't document the unit of its `amount` yet, and a wrong one would misprice a payment. Lens account
     // actions pay from the account itself, with no native value on the transaction.
@@ -381,6 +393,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
         paymaster: custom?.paymasterParams?.paymaster,
         paymasterInput: custom?.paymasterParams?.paymasterInput,
         customSignature: custom?.customSignature ?? undefined,
+        idempotencyKey,
       })
       .catch((err: unknown) => {
         // Orb no longer holds this page's approval (it cleared it, or the session behind it ended): the
@@ -397,13 +410,20 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
   }
 
   // Inside Orb, what `handleOperationWith(walletClient)` from @lens-protocol/client/viem does with a wallet:
-  // `.andThen(orb.handleOperation)`. What Lens already did (signless) passes its hash on; a transaction to sign
-  // opens Orb's approval sheet. Its result only says Orb sent it: wait for it as usual (`waitForTransaction`).
-  const handleOperation = ((result) => {
-    if ("hash" in result) return okAsync(result.hash)
-    if (!isTransactionRequest(result)) return errAsync(ValidationError.fromErrorResponse(result))
-    return ResultAsync.fromPromise(sendThroughOrb(result.raw), (err) => SigningError.from(err))
-  }) as OperationHandler
+  // `.andThen(orb.handleOperationWith({ idempotencyKey }))`. What Lens already did (signless) passes its hash on;
+  // a transaction to sign opens Orb's approval sheet. Its result only says Orb sent it: wait for it as usual
+  // (`waitForTransaction`). Orb sends at most one transaction per key: a retry under the same key gets the first
+  // one's result, without a second sheet.
+  function handleOperationWith(options: OrbOperationOptions = {}): OperationHandler {
+    return ((result) => {
+      if ("hash" in result) return okAsync(result.hash)
+      if (!isTransactionRequest(result)) return errAsync(ValidationError.fromErrorResponse(result))
+      return ResultAsync.fromPromise(sendThroughOrb(result.raw, options), (err) => SigningError.from(err))
+    }) as OperationHandler
+  }
+
+  // `handleOperationWith()` with no key: each call can open a new sheet
+  const handleOperation = handleOperationWith()
 
   const orbAuth = {
     isInsideOrb: insideOrb,
@@ -431,6 +451,7 @@ export function createOrbAuth(options: OrbAuthOptions = {}) {
     fetchConvexToken,
     fetch: authFetch,
     handleOperation,
+    handleOperationWith,
   }
   return orbAuth satisfies OrbAuthSource
 }
