@@ -47,7 +47,7 @@ vi.mock("@orbclub/apps-sdk/client", async (importOriginal) => {
   return { ...actual, OrbAppsClient: FakeOrbAppsClient, isInsideOrb: () => host.inside }
 })
 
-import { OrbConnectDeclinedError, OrbTransactionError } from "@orbclub/apps-sdk/client"
+import { OrbConnectDeclinedError, OrbTransactionError, OrbTransactionOutcomeUnknownError } from "@orbclub/apps-sdk/client"
 import { createOrbAuth } from "../src/orb"
 
 function jwt(claims: Record<string, unknown>) {
@@ -372,7 +372,24 @@ describe("handleOperation", () => {
       paymaster: "0x2222222222222222222222222222222222222222",
       paymasterInput: "0x1234",
       customSignature: undefined,
+      idempotencyKey: undefined,
     })
+  })
+
+  it("sends handleOperationWith's idempotency key with the transaction, and keeps Orb's error when the outcome is unknown", async () => {
+    host.performTransaction = vi.fn(async () => ({ status: "completed", transactionHash: HASH }))
+    const orb = await startedOrb()
+    await orb.signIn()
+    const result = await orb.handleOperationWith({ idempotencyKey: "order-1:0" })(sponsored() as never)
+    expect(result.isOk() && result.value).toBe(HASH)
+    expect(host.performTransaction).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "order-1:0" }))
+
+    host.performTransaction = vi.fn(async () => {
+      throw new OrbTransactionOutcomeUnknownError()
+    })
+    const unknown = await orb.handleOperationWith({ idempotencyKey: "order-1:0" })(sponsored() as never)
+    expect(unknown.isErr() && unknown.error.cause).toBeInstanceOf(OrbTransactionOutcomeUnknownError)
+    expect(orb.getState().status).toBe("signed-in")
   })
 
   it("refuses transactions with a native amount, or for another wallet, without asking Orb", async () => {

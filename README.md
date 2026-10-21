@@ -480,6 +480,21 @@ operation out itself and `handleOperation` only passes the hash on. A transactio
 Orb's approval sheet. Transactions with a native amount are refused for now: Orb doesn't document the unit
 of its `amount` yet. Lens account actions, collects included, pay from the account and carry none.
 
+When a transaction pays for something, send it with `orb.handleOperationWith({ idempotencyKey })` instead:
+
+```ts
+const send = useLensAuth().method === "orb"
+  ? orb.handleOperationWith({ idempotencyKey: `${order.id}:${index}` })
+  : handleOperationWith(walletClient)
+```
+
+Use one key per transaction (1–128 letters, digits, `.`, `_`, `:` or `-`). Orb sends at most one transaction
+per key, for the viewer and your origin, for 24 hours: a retry under the same key gets the first one's result
+and never opens a second sheet, so a viewer retrying after a timeout isn't charged twice. Declines and
+failures before signing aren't kept, so the same key can try again. A timeout, or an error whose `cause` is
+`OrbTransactionOutcomeUnknownError` (`@orbclub/apps-sdk/client`), doesn't mean it failed: retry with the
+same key, or check the chain before you offer a retry without one.
+
 If Orb no longer holds the app's approval (it can clear it, and the sandbox drops it when its own sign-in
 ends), Orb refuses the transaction. `handleOperation` then ends the Orb session and fails with "Your Orb
 session ended. Sign in again.", so the viewer signs in again instead of acting on a stale session.
@@ -510,6 +525,11 @@ on `localhost`. In development only:
 3. Sign in with Orb on the sandbox page (a QR code you scan with Orb on your phone), then sign in from your
    app. The sandbox hands your app tokens for its own domain, which the token route accepts only with
    `allowSandbox`.
+
+Transactions in the sandbox are real and spend real funds: the sandbox forwards each one to Orb on your phone
+(Orb 3.3.40 or later) to approve, keeping only `to`, `chainId`, `data` and `amount`, so your phone's wallet
+pays the gas instead of a Lens sponsor. Set the sandbox's **Transactions** setting to **Simulated** to get a
+random hash instead (`waitForTransaction` then times out, as the hash was never sent).
 
 To open it in the real Orb app, send the Orb team your app's HTTPS address.
 
@@ -626,7 +646,7 @@ Need `@orbclub/apps-sdk`. `createOrbAuth(options?)`:
 | `lens` | | Your `createLensAuth` instance: the Orb session becomes its Lens client's session. See [Lens SDK calls as the Orb viewer](#lens-sdk-calls-as-the-orb-viewer) |
 
 Returns `orb` with `isInsideOrb()`, `client`, `context`, `getState()`, `subscribe()`, `signIn()`,
-`signOut()`, `fetch()`, `fetchConvexToken()` and `handleOperation`.
+`signOut()`, `fetch()`, `fetchConvexToken()`, `handleOperation` and `handleOperationWith({ idempotencyKey })`.
 
 `auth.setExternalSession(credentials | null)` (`lens-convex-auth`) is what `lens` uses: it makes an in-memory
 session the Lens client's, without storing, refreshing or revoking it.
