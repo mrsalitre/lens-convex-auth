@@ -39,11 +39,11 @@ To use the styled components (`lens-convex-auth/react/ui`), add their dependenci
 peer dependencies, so apps that draw their own UI don't install them:
 
 ```bash
-pnpm add @radix-ui/react-avatar @radix-ui/react-dialog @radix-ui/react-label @radix-ui/react-slot vaul lucide-react class-variance-authority clsx tailwind-merge
+pnpm add @base-ui/react lucide-react class-variance-authority clsx tailwind-merge
 ```
 
-They're styled with Tailwind CSS v4 and [shadcn/ui](https://ui.shadcn.com) theme variables, so they follow
-your app's theme.
+They're shadcn/ui's [Base UI](https://base-ui.com) components (the `base-vega` style), styled with Tailwind CSS v4
+and the [shadcn/ui](https://ui.shadcn.com) theme variables, so they follow your app's theme.
 
 ## Setup (Next.js)
 
@@ -729,13 +729,20 @@ on both sides if you changed them.
 
 **The dialog is unstyled.** Tailwind isn't scanning the package: add the `@source` line from step 7.
 
+## Upgrading from 0.8
+
+- The styled components are built on Base UI instead of Radix and vaul. Install `@base-ui/react`; you can
+  remove `@radix-ui/react-avatar`, `@radix-ui/react-dialog`, `@radix-ui/react-label`,
+  `@radix-ui/react-slot` and `vaul` if nothing else in your app uses them. The props of `SignInButton`,
+  `AccountDialog`, `AccountPicker` and `CreateAccountForm` didn't change.
+
 ## Upgrading from 0.4
 
 - The provider no longer renders the account dialog, and its `accountDialog` prop is gone. Add
   `<AccountDialog />` inside `<LensAuthProvider>`, or build your own from the hooks. In development, a
   console warning says so when a wallet connects and nothing shows the dialog.
 - `SignInButton`, `AccountDialog`, `AccountPicker` and `CreateAccountForm` moved to
-  `lens-convex-auth/react/ui`, and their dependencies (Radix, vaul, lucide-react, …) are optional peer
+  `lens-convex-auth/react/ui`, and their dependencies (Base UI, lucide-react, …) are optional peer
   dependencies now: install them to keep using the components (see [Install](#install)).
 - `useAccountDialog()` no longer returns `title` and `description`. `<AccountPicker>` gives them through
   `onHeaderChange`.

@@ -25,6 +25,7 @@ export function AccountDialog() {
   const [{ title, description }, setHeader] = React.useState(DEFAULT_HEADER)
   const isDesktop = useMediaQuery("(min-width: 768px)")
 
+  // Escape, outside presses and swipes all close through here, so refusing it keeps a required dialog open
   const handleOpenChange = (next: boolean) => {
     if (!next && required) return
     setOpen(next)
@@ -39,13 +40,8 @@ export function AccountDialog() {
 
   if (isDesktop) {
     return (
-      <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent
-          className="sm:max-w-[425px] max-h-[80vh] overflow-y-auto"
-          showCloseButton={!required}
-          onEscapeKeyDown={(e) => required && e.preventDefault()}
-          onPointerDownOutside={(e) => required && e.preventDefault()}
-        >
+      <Dialog open={open} onOpenChange={handleOpenChange} disablePointerDismissal={required}>
+        <DialogContent className="sm:max-w-[425px] max-h-[80vh] overflow-y-auto" showCloseButton={!required}>
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
@@ -57,13 +53,14 @@ export function AccountDialog() {
   }
 
   return (
-    <Drawer open={open} onOpenChange={handleOpenChange} dismissible={!required}>
-      <DrawerContent className="max-h-[80vh] overflow-y-auto">
+    <Drawer open={open} onOpenChange={handleOpenChange} disablePointerDismissal={required} showSwipeHandle={!required}>
+      <DrawerContent className="max-h-[80vh]">
         <DrawerHeader className="text-left">
           <DrawerTitle>{title}</DrawerTitle>
           <DrawerDescription>{description}</DrawerDescription>
         </DrawerHeader>
-        <div className="px-4 pb-4">
+        {/* The drawer's content clips, so the picker scrolls inside it */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
           <AccountPicker actions={leave} onHeaderChange={setHeader} />
         </div>
       </DrawerContent>
